@@ -377,7 +377,7 @@ static int32_t Sci_Reset(struct s_reader *reader, ATR *atr)
 
 static int32_t Sci_WriteSettings(struct s_reader *reader, unsigned char T, uint32_t fs, uint32_t ETU, uint32_t WWT, uint32_t CWT, uint32_t BWT, uint32_t EGT, unsigned char P, unsigned char I)
 {
-    cs_sleepms(150);
+	if(!reader->fast_reset_running || reader->fast_reset_lean_bad || !reader->fast_reset_in_lean) { cs_sleepms(150); }
 	struct sr_data *crdr_data = reader->crdr_data;
 	//int32_t n;
 	SCI_PARAMETERS params;
@@ -422,56 +422,98 @@ static int32_t Sci_WriteSettings(struct s_reader *reader, unsigned char T, uint3
 static int32_t Sci_FastReset(struct s_reader *reader, ATR *atr)
 {
 	struct sr_data *crdr_data = reader->crdr_data;
-	int8_t atr_ok = 1; // initiate atr in ERROR
-	uint32_t timeout = ATR_TIMEOUT;
-	unsigned char buf[SCI_MAX_ATR_SIZE];
-	int8_t atr_len = 0;
-
-	if(reader->seca_nagra_card == 1)
-	{
-		atr_len = reader->card_atr_length; // this is a special case the data buffer has only the atr length.
-	}
-	else
-	{
-		atr_len = reader->card_atr_length + 2; // data buffer has atr length + 2 bytes
-	}
+	int8_t atr_ok = OK;
 
 	Sci_Activate(reader);
 	cs_sleepms(50);
 	if(ioctl(reader->handle, IOCTL_SET_RESET, 1) < 0)
 	{
-		rdr_log(reader, "Error:%s ioctl(IOCTL_SET_RESET) failed.(%d:%s)", __FUNCTION__, errno, strerror(errno) );
+		rdr_log(reader, "Error:%s ioctl(IOCTL_SET_RESET) failed.(%d:%s)", __FUNCTION__, errno, strerror(errno));
 		Sci_Deactivate(reader);
-		atr_ok = ERROR;
+		return ERROR;
 	}
-	else
-	{
-		IO_Serial_Read(reader, 0, timeout*10, atr_len, buf);  //read atr: give some extra timeout time since on some platforms all chars are read at once
-//		rdr_log_dump(reader,buf, SCI_MAX_ATR_SIZE * 2, "SCI ATR :"); // just to crosscheck the buffer I left it commented.
-		if(ioctl(reader->handle, IOCTL_SET_ATR_READY, 1) < 0)
-		{
-			rdr_log(reader, "Error:%s ioctl(IOCTL_SET_ATR_READY) failed.(%d:%s)", __FUNCTION__, errno, strerror(errno) );
-			Sci_Deactivate(reader);
-			atr_ok = ERROR;
-		}
-		else
-		{
-			if(ATR_InitFromArray(atr, buf, atr_len) != ERROR)
-			{
-				atr_ok = OK;
-			}
-			else
-			{
-				rdr_log(reader,"Error reading ATR");
-				atr_ok= ERROR;
-			}
 
-			cs_sleepms(150);
-			Sci_WriteSettings(reader, crdr_data->T,crdr_data->fs,crdr_data->ETU, crdr_data->WWT,crdr_data->CWT,crdr_data->BWT,crdr_data->EGT,crdr_data->P,crdr_data->I);
-			cs_sleepms(150);
-		}
+	// Parse the ATR as it arrives. The old code waited for card_atr_length+2 raw bytes; cards whose
+	// ATR has no TCK (T=0 only) never send those 2 extra bytes, so every fast reset burned the
+	// whole read timeout (~7 s) during which ECMs timed out.
+	if(Sci_Read_ATR(reader, atr) == ERROR)
+	{
+		rdr_log(reader, "Error reading ATR during fast reset");
+		return ERROR;
 	}
+	if(ioctl(reader->handle, IOCTL_SET_ATR_READY, 1) < 0)
+	{
+		rdr_log(reader, "Error:%s ioctl(IOCTL_SET_ATR_READY) failed.(%d:%s)", __FUNCTION__, errno, strerror(errno));
+		Sci_Deactivate(reader);
+		return ERROR;
+	}
+	Sci_WriteSettings(reader, crdr_data->T, crdr_data->fs, crdr_data->ETU, crdr_data->WWT, crdr_data->CWT,
+					  crdr_data->BWT, crdr_data->EGT, crdr_data->P, crdr_data->I);
 	return atr_ok;
+}
+
+/*
+ * Lean reset (modelled on TCMG's internal reader): the card is reset exactly like at the first
+ * activation (initial 1 MHz parameters, flush, reset, read ATR), then the parameters of the last
+ * full init are written back.  No ATR parsing, no PPS, no card-system init and none of the long
+ * safety sleeps.  Only valid while the card was NOT switched with a successful PPS (pps_state != 1)
+ * and the ATR is unchanged; otherwise it returns ERROR and the caller falls back to a normal reset.
+ */
+static int32_t Sci_LeanReset(struct s_reader *reader)
+{
+	struct sr_data *crdr_data = reader->crdr_data;
+	if(!crdr_data || !crdr_data->fs || !reader->card_atr_length)
+		{ return ERROR; }
+
+	int32_t in = 0;
+	if(ioctl(reader->handle, IOCTL_GET_IS_CARD_PRESENT, &in) < 0 || in != 1)
+		{ return ERROR; }
+
+	SCI_PARAMETERS params;
+	memset(&params, 0, sizeof(SCI_PARAMETERS));
+	params.ETU = 372;
+	params.EGT = 0;
+	params.T = 0;
+	params.fs = 3;
+	if(reader->cardmhz > 2000) { params.fs = (int32_t)(reader->cardmhz / 100.0 + 0.5); }
+	if(reader->cardmhz == 8300) { params.fs = 16; }
+
+	ioctl(reader->handle, IOCTL_SET_PARAMETERS, &params);
+	cs_sleepms(150); // give the reader some time to process the params
+	tcflush(reader->handle, TCIFLUSH);
+	cs_sleepms(50);
+
+	if(ioctl(reader->handle, IOCTL_SET_RESET, 1) < 0)
+	{
+		rdr_log(reader, "Error:%s ioctl(IOCTL_SET_RESET) failed.(%d:%s)", __FUNCTION__, errno, strerror(errno));
+		return ERROR;
+	}
+
+	ATR atr;
+	if(Sci_Read_ATR(reader, &atr) == ERROR)
+		{ return ERROR; }
+
+	uint8_t raw[ATR_MAX_SIZE];
+	uint32_t raw_len = 0;
+	ATR_GetRaw(&atr, raw, &raw_len);
+	if(raw_len != (uint32_t)reader->card_atr_length || memcmp(raw, reader->card_atr, raw_len))
+	{
+		rdr_log(reader, "lean reset: ATR changed, using normal reset");
+		return ERROR;
+	}
+
+	if(ioctl(reader->handle, IOCTL_SET_ATR_READY, 1) < 0)
+	{
+		rdr_log(reader, "Error:%s ioctl(IOCTL_SET_ATR_READY) failed.(%d:%s)", __FUNCTION__, errno, strerror(errno));
+		return ERROR;
+	}
+
+	// restore the working parameters of the last full init (trailing settle time is inside)
+	reader->fast_reset_in_lean = 1;
+	Sci_WriteSettings(reader, crdr_data->T, crdr_data->fs, crdr_data->ETU, crdr_data->WWT, crdr_data->CWT,
+					  crdr_data->BWT, crdr_data->EGT, crdr_data->P, crdr_data->I);
+	reader->fast_reset_in_lean = 0;
+	return OK;
 }
 
 static int32_t Sci_Init(struct s_reader *reader)
@@ -505,6 +547,10 @@ static int32_t Sci_Init(struct s_reader *reader)
 
 static int32_t sci_activate(struct s_reader *reader, ATR *atr)
 {
+	/* Fast reset must run the SAME sequence as the first init (initial 1 MHz params -> reset -> ATR ->
+	 * PPS -> working params).  Sci_FastReset resets the card while the reader still runs the post-PPS
+	 * parameters and writes them before PPS, so for a PPS-switched card (e.g. Conax TA1=0x94) the PPS
+	 * fails/times out and the reader and card end up at different speeds. It stays only for ins7e11. */
 	if(!reader->ins7e11_fast_reset)
 	{
 		call(Sci_Activate(reader));
@@ -512,7 +558,7 @@ static int32_t sci_activate(struct s_reader *reader, ATR *atr)
 	}
 	else
 	{
-		rdr_log_dbg(reader, D_IFD, "Fast card reset with atr");
+		rdr_log_dbg(reader, D_IFD, "Fast card reset with ATR");
 		call(Sci_FastReset(reader, atr));
 	}
 	return OK;
@@ -536,24 +582,18 @@ static int32_t sci_write_settings(struct s_reader *reader, struct s_cardreader_s
 		// P fixed at 5V since this is default class A card, and TB is deprecated
 		if(reader->protocol_type != ATR_PROTOCOL_TYPE_T14)   // fix VU+ internal reader slow responses on T0/T1
 		{
-			cs_sleepms(150);
 			call(Sci_WriteSettings(reader, 0, reader->divider, s->ETU, s->WWT, reader->CWT, reader->BWT, s->EGT, 5, (unsigned char)s->I));
-			cs_sleepms(150);
 		}
 		else     // no fixup for T14 protocol otherwise error
 		{
-			cs_sleepms(150);
 			call(Sci_WriteSettings(reader, reader->protocol_type, reader->divider, s->ETU, s->WWT, reader->CWT, reader->BWT, s->EGT, 5, (unsigned char)s->I));
-			cs_sleepms(150);
 		}
 	}
 	else     // all other brand boxes than dreamboxes or VU+!
 	{
 		// P fixed at 5V since this is default class A card, and TB is deprecated
-		cs_sleepms(150);
 		// non pll internal reader needs base frequency like 1,2,3,4,5,6 MHz not clock rate conversion factor (Fi)
 		call(Sci_WriteSettings(reader, reader->protocol_type, s->F/100, s->ETU, s->WWT, reader->CWT, reader->BWT, s->EGT, 5, (unsigned char)s->I));
-		cs_sleepms(150);
 	}
 	return OK;
 }
@@ -571,6 +611,7 @@ const struct s_cardreader cardreader_internal_sci =
 	.receive         = IO_Serial_Receive,
 	.close           = Sci_Close,
 	.write_settings  = sci_write_settings,
+	.lean_reset      = Sci_LeanReset,
 };
 
 #endif

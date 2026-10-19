@@ -982,6 +982,7 @@ struct s_cardreader
 	int32_t			(*card_write)(struct s_reader *pcsc_reader, const uint8_t *buf, uint8_t *cta_res, uint16_t *cta_lr, int32_t l);
 	void			(*display_msg)(struct s_reader *, char *msg);
 
+	int32_t			(*lean_reset)(struct s_reader *); // optional: minimal reset that restores the settings of the last full init (no PPS / ATR parsing / card init)
 	int32_t			(*do_reset)(struct s_reader *, struct s_ATR *, int32_t (*rdr_activate_card)(struct s_reader *, struct s_ATR *, uint16_t deprecated), int32_t (*rdr_get_cardsystem)(struct s_reader *, struct s_ATR *));
 
 	bool			(*set_DTS_RTS)(struct s_reader *, int32_t *dtr, int32_t *rts);
@@ -1567,6 +1568,19 @@ struct s_reader										// contains device info, reader info and card info
 	uint8_t			changes_since_shareupdate;
 	int32_t			resetcycle;						// ECM until reset
 	int32_t			resetcounter;					// actual count
+	int32_t			fast_reset;						// Fast Reset interval in seconds (0 = off)
+	int32_t			fast_reset_idle;				// pause Fast Reset after N seconds without ECM (0 = never pause)
+	time_t			fast_reset_last;				// time of last (fast) reset
+	int8_t			fast_reset_paused;				// paused because of idle
+	int8_t			fast_reset_nocardinit;			// skip card_init on Fast Reset (default 1)
+	int8_t			fast_reset_nocardinfo;			// skip card info on Fast Reset (default 1)
+	int8_t			disable_card_info;				// never read card info (not at startup, not after resets) (default 0)
+	int8_t			pps_state;						// last PPS attempt: 0 = none/not needed, 1 = succeeded, 2 = failed (card ignores PPS)
+	int8_t			fast_reset_running;				// a fast reset is executing right now (skip the safety sleeps in the sci driver)
+	int8_t			fast_reset_queued;				// a fast reset job is already queued
+	int8_t			fast_reset_in_lean;				// inside Sci_LeanReset (TCMG-style sequence, no pre-settle sleep)
+	int32_t			fr_ms_atr, fr_ms_flush, fr_ms_pps, fr_ms_set;	// phase timings of the running fast reset (ms)
+	int8_t			fast_reset_lean_bad;			// lean reset failed its probe on a PPS card: use the normal reset from now on
 	uint32_t		auprovid;						// AU only for this provid
 	int8_t			audisabled;						// exclude reader from auto AU
 	struct timeb	emm_last;							// time of last successfully written emm

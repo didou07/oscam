@@ -293,7 +293,12 @@ int32_t ICC_Async_Activate(struct s_reader *reader, ATR *atr, uint16_t deprecate
 	else
 	{
 		reader->crdr_flush = crdr_ops->flush; // Flush flag may be changed for each reader
+		struct timeb ph_t0, ph_t1;
+		cs_ftime(&ph_t0);
 		call(crdr_ops->activate(reader, atr));
+		cs_ftime(&ph_t1);
+		if(reader->fast_reset_running)
+			{ reader->fr_ms_atr = (int32_t)comp_timeb(&ph_t1, &ph_t0); }
 		if(crdr_ops->skip_extra_atr_parsing
 #ifdef READER_NAGRA_MERLIN
 			&& reader->cak7_mode == 0
@@ -327,7 +332,10 @@ int32_t ICC_Async_Activate(struct s_reader *reader, ATR *atr, uint16_t deprecate
 	{
 		crdr_ops->lock(reader);
 	}
+	struct timeb pa_t0, pa_t1;
+	cs_ftime(&pa_t0);
 	int32_t ret = Parse_ATR(reader, atr, deprecated);
+	cs_ftime(&pa_t1);
 	if(crdr_ops->unlock)
 	{
 		crdr_ops->unlock(reader);
@@ -840,6 +848,7 @@ static int32_t Parse_ATR(struct s_reader *reader, ATR *atr, uint16_t deprecated)
 
 		reader->read_timeout = 1000000; // in us
 		bool PPS_success = 0;
+		reader->pps_state = 0;
 		bool NeedsPTS = ((reader->protocol_type != ATR_PROTOCOL_TYPE_T14) && (numprottype > 1 || (atr->ib[0][ATR_INTERFACE_BYTE_TA].present == 1 && atr->ib[0][ATR_INTERFACE_BYTE_TA].value != 0x11) || N == 255)); //needs PTS according to old ISO 7816
 		if(NeedsPTS && deprecated == 0)
 		{
@@ -853,7 +862,13 @@ static int32_t Parse_ATR(struct s_reader *reader, ATR *atr, uint16_t deprecated)
 			}
 			uint32_t len = 0;
 			call(SetRightParity(reader));
+			struct timeb pp_t0, pp_t1;
+			cs_ftime(&pp_t0);
 			ret = PPS_Exchange(reader, req, &len);
+			cs_ftime(&pp_t1);
+			if(reader->fast_reset_running)
+				{ reader->fr_ms_pps = (int32_t)comp_timeb(&pp_t1, &pp_t0); }
+			reader->pps_state = (ret == OK) ? 1 : 2;
 			if(ret == OK)
 			{
 				FI = req[2] >> 4;
@@ -1018,12 +1033,22 @@ static int32_t SetRightParity(struct s_reader *reader)
 		parity = PARITY_NONE;
 	}
 
+	struct timeb sp_t0, sp_t1;
+	cs_ftime(&sp_t0);
 	call(ICC_Async_SetParity(reader, parity));
 
 	if(crdr_ops->flush && reader->crdr_flush)
 	{
-		IO_Serial_Flush(reader);
+		// IO_Serial_Flush polls for stray bytes (75 ms per poll) and costs ~3 s per call on the internal
+		// sci device; it ran twice per reset. A fast reset only needs the kernel buffers cleared (what TCMG does).
+		if(reader->fast_reset_running && reader->typ == R_INTERNAL)
+			{ tcflush(reader->handle, TCIOFLUSH); }
+		else
+			{ IO_Serial_Flush(reader); }
 	}
+	cs_ftime(&sp_t1);
+	if(reader->fast_reset_running)
+		{ reader->fr_ms_flush += (int32_t)comp_timeb(&sp_t1, &sp_t0); }
 
 	return OK;
 }
@@ -1313,7 +1338,12 @@ static int32_t InitCard(struct s_reader *reader, ATR *atr, unsigned char FI, uin
 
 	if(crdr_ops->write_settings)
 	{
+		struct timeb ws_t0, ws_t1;
+		cs_ftime(&ws_t0);
 		call(crdr_ops->write_settings(reader, &s));
+		cs_ftime(&ws_t1);
+		if(reader->fast_reset_running)
+			{ reader->fr_ms_set = (int32_t)comp_timeb(&ws_t1, &ws_t0); }
 	}
 
 /*

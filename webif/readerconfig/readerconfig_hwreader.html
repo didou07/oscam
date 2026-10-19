@@ -17,6 +17,11 @@
 ##TPLREADERPINCODE##
 ##TPLREADERCONFIGNANO##
 				<TR><TD><A>Reset after No. ECM:</A></TD><TD><input name="resetcycle" class="short" type="text" maxlength="5" value="##RESETCYCLE##"></TD></TR>
+				<TR><TD><A>Fast Reset (s):</A></TD><TD><input name="fastreset" class="short" type="text" maxlength="5" value="##FASTRESET##"><label>Conax only</label></TD></TR>
+				<TR><TD><A>Fast Reset idle pause (s):</A></TD><TD><input name="fastresetidle" class="short" type="text" maxlength="5" value="##FASTRESETIDLE##"><label>Conax only</label></TD></TR>
+				<TR><TD><A>Disable card init:</A></TD><TD><input name="fastresetnocardinit" type="hidden" value="0"><input name="fastresetnocardinit" type="checkbox" value="1" ##FASTRESETNOCARDINITCHECKED##><label>Conax only</label></TD></TR>
+				<TR><TD><A>Disable card info (fast reset):</A></TD><TD><input name="fastresetnocardinfo" type="hidden" value="0"><input name="fastresetnocardinfo" type="checkbox" value="1" ##FASTRESETNOCARDINFOCHECKED##><label>Conax only</label></TD></TR>
+				<TR><TD><A>Disable card info (always):</A></TD><TD><input name="disablecardinfo" type="hidden" value="0"><input name="disablecardinfo" type="checkbox" value="1" ##DISABLECARDINFOCHECKED##><label>Never read card info, also at startup</label></TD></TR>
 				<TR><TD><A>Deprecated:</A></TD><TD><input name="deprecated" type="hidden" value="0"><input name="deprecated" type="checkbox" value="1" ##DEPRECATEDCHECKED##><label></label></TD></TR>
 ##TPLREADERCONFIGCRYPTOWORKS##
 ##TPLREADERCONFIGNAGRA##

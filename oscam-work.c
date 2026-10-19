@@ -29,6 +29,27 @@ struct job_data
 	uint16_t len;
 };
 
+// true if an ECM request is waiting in the client's job queue
+int8_t job_ecm_waiting(struct s_client *cl)
+{
+	int8_t found = 0;
+	if(!cl)
+		{ return 0; }
+	SAFE_MUTEX_LOCK(&cl->thread_lock);
+	if(cl->joblist && ll_count(cl->joblist) > 0)
+	{
+		LL_ITER it = ll_iter_create(cl->joblist);
+		struct job_data *jd;
+		while((jd = ll_iter_next(&it)))
+		{
+			if(jd->action == ACTION_READER_ECM_REQUEST)
+				{ found = 1; break; }
+		}
+	}
+	SAFE_MUTEX_UNLOCK(&cl->thread_lock);
+	return found;
+}
+
 static void free_job_data(struct job_data *data)
 {
 	if(!data)
@@ -354,6 +375,10 @@ void *work_thread(void *ptr)
 
 				case ACTION_READER_CHECK_HEALTH:
 					cardreader_do_checkhealth(reader);
+					break;
+
+				case ACTION_READER_FAST_RESET:
+					cardreader_do_fast_reset(reader);
 					break;
 
 				case ACTION_READER_CAPMT_NOTIFY:

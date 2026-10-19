@@ -17,6 +17,7 @@ enum actions
 	ACTION_READER_CAPMT_NOTIFY = 12,    // wr12
 	ACTION_READER_POLL_STATUS  = 13,    // wr13
 	ACTION_READER_SENDCMD      = 14,    // wr14
+	ACTION_READER_FAST_RESET   = 15,    // wr15
 	// Client actions
 	ACTION_CLIENT_UDP          = 22,    // wc22
 	ACTION_CLIENT_TCP          = 23,    // wc23
@@ -39,5 +40,7 @@ enum actions
 
 int32_t add_job(struct s_client *cl, enum actions action, void *ptr, int32_t len);
 void free_joblist(struct s_client *cl);
+
+int8_t job_ecm_waiting(struct s_client *cl);
 
 #endif

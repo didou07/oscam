@@ -2585,6 +2585,11 @@ static char *send_oscam_reader_config(struct templatevars *vars, struct uriparam
 
 	// Reset Cycle
 	tpl_printf(vars, TPLADD, "RESETCYCLE", "%d", rdr->resetcycle);
+	tpl_printf(vars, TPLADD, "FASTRESET", "%d", rdr->fast_reset);
+	tpl_printf(vars, TPLADD, "FASTRESETIDLE", "%d", rdr->fast_reset_idle);
+	tpl_addVar(vars, TPLADD, "FASTRESETNOCARDINITCHECKED", rdr->fast_reset_nocardinit ? "checked" : "");
+	tpl_addVar(vars, TPLADD, "FASTRESETNOCARDINFOCHECKED", rdr->fast_reset_nocardinfo ? "checked" : "");
+	tpl_addVar(vars, TPLADD, "DISABLECARDINFOCHECKED", rdr->disable_card_info ? "checked" : "");
 
 	// Disable Serverfilter
 	if(!apicall)

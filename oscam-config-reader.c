@@ -1179,6 +1179,11 @@ static const struct config_list reader_opts[] =
 	DEF_OPT_INT32("reconnecttimeout"              , OFS(tcp_rto),                         DEFAULT_TCP_RECONNECT_TIMEOUT),
 	DEF_OPT_INT32("reconnectdelay"                , OFS(tcp_reconnect_delay),             60000),
 	DEF_OPT_INT32("resetcycle"                    , OFS(resetcycle),                      0),
+	DEF_OPT_INT32("fastreset"                     , OFS(fast_reset),                      0),
+	DEF_OPT_INT32("fastresetidle"                 , OFS(fast_reset_idle),                 0),
+	DEF_OPT_INT8("fastresetnocardinit"            , OFS(fast_reset_nocardinit),           1),
+	DEF_OPT_INT8("fastresetnocardinfo"            , OFS(fast_reset_nocardinfo),           1),
+	DEF_OPT_INT8("disablecardinfo"                , OFS(disable_card_info),               0),
 	DEF_OPT_INT8("disableserverfilter"            , OFS(ncd_disable_server_filt),         0),
 	DEF_OPT_INT8("connectoninit"                  , OFS(ncd_connect_on_init),             0),
 	DEF_OPT_UINT8("keepalive"                     , OFS(keepalive),                       0),
@@ -1404,7 +1409,7 @@ static bool reader_check_setting(const struct config_list *UNUSED(clist), void *
 	// These are written only when the reader is physical reader
 	static const char *hw_only_settings[] =
 	{
-		"readnano", "resetcycle", "smargopatch", "autospeed", "sc8in1_dtrrts_patch", "boxid","fix07",
+		"readnano", "resetcycle", "fastreset", "fastresetidle", "fastresetnocardinit", "fastresetnocardinfo", "disablecardinfo", "smargopatch", "autospeed", "sc8in1_dtrrts_patch", "boxid","fix07",
 		"fix9993", "rsakey", "deskey", "card_startdate_basemonth", "card_startdate_baseyear", "card_expiredate_basemonth", "card_expiredate_baseyear", "ins7e", "ins42", "ins7e11", "ins2e06", "k1_generic", "k1_unique", "force_irdeto", "boxkey",
 		"atr", "detect", "nagra_read", "mhz", "cardmhz", "readtiers", "read_old_classes", "use_gpio", "needsglobalfirst",
 #ifdef READER_NAGRA_MERLIN

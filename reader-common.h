@@ -45,6 +45,7 @@ void cardreader_init_locks(void);
 bool cardreader_init(struct s_reader *reader);
 void cardreader_close(struct s_reader *reader);
 void cardreader_do_reset(struct s_reader *reader);
+void cardreader_do_fast_reset(struct s_reader *reader);
 void cardreader_reset(struct s_client *cl);
 int32_t cardreader_do_checkhealth(struct s_reader *reader);
 void cardreader_checkhealth(struct s_client *cl, struct s_reader *rdr);
@@ -65,6 +66,7 @@ static inline void cardreader_do_reset(struct s_reader *UNUSED(reader))
 {
 	return;
 }
+static inline void cardreader_do_fast_reset(struct s_reader *UNUSED(reader)) { }
 static inline void cardreader_reset(struct s_client *UNUSED(cl)) { }
 static inline int32_t cardreader_do_checkhealth(struct s_reader *UNUSED(reader))
 {

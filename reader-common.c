@@ -120,12 +120,14 @@ static int32_t reader_activate_card(struct s_reader *reader, ATR *atr, uint16_t 
 	if(ret) { return (0); }
 
 	//rdr_log("ATR: %s", cs_hexdump(1, atr, atr_size, tmp, sizeof(tmp))); // FIXME
-	cs_sleepms(1000);
+	cs_sleepms(300); // was 1000: the card is already answering (ATR read); fast reset runs without this delay and works
 	return (1);
 }
 
 void cardreader_get_card_info(struct s_reader *reader)
 {
+	if(reader->disable_card_info)
+		{ return; } // card info completely disabled for this reader
 	if((reader->card_status == CARD_NEED_INIT) || (reader->card_status == CARD_INSERTED))
 	{
 		struct s_client *cl = reader->client;
@@ -180,6 +182,11 @@ static int32_t reader_get_cardsystem(struct s_reader *reader, ATR *atr)
 	}
 
 	return (reader->csystem_active);
+}
+
+static inline int reader_is_conax(struct s_reader *reader)
+{
+	return reader->csystem && reader->csystem->desc && !strcmp(reader->csystem->desc, "conax");
 }
 
 void cardreader_do_reset(struct s_reader *reader)
@@ -251,7 +258,10 @@ void cardreader_do_reset(struct s_reader *reader)
 	{
 		cardreader_get_card_info(reader);
 		reader->card_status = CARD_INSERTED;
+		reader->fast_reset_paused = 0;
 		do_emm_from_file(reader);
+		// Start the interval after initialization; do not reset the card a second time immediately.
+		reader->fast_reset_last = time(NULL);
 		ICC_Async_DisplayMsg(reader, "AOK");
 #ifdef MODULE_GBOX
 		gbx_local_card_stat(LOCALCARDUP, reader->caid); // local card up
@@ -259,6 +269,172 @@ void cardreader_do_reset(struct s_reader *reader)
 	}
 
 	return;
+}
+
+/*
+ * Fast Reset
+ * Periodic lean card reset that keeps the card responsive.  It is deliberately
+ * minimal: it reuses the current reader settings and skips card-system init by
+ * default. It is scheduled only when no ECM is waiting and never takes priority
+ * over queued ECM work. On failure it falls back to a full reset.
+ */
+static int32_t reader_activate_card_fast(struct s_reader *reader, ATR *atr, uint16_t deprecated)
+{
+	// card_status is deliberately NOT required to be CARD_NEED_INIT here: during a fast reset the
+	// reader stays CARD_INSERTED so ECMs keep matching it and simply wait in its queue
+	return !ICC_Async_Activate(reader, atr, deprecated);
+}
+
+static int32_t reader_fast_cardsystem(struct s_reader *reader, ATR *atr)
+{
+	const struct s_cardsystem *csystem = reader->csystem;
+	if(!csystem || !csystem->card_init)
+		{ return 0; }
+	if(reader->fast_reset_nocardinit)
+		{ return 1; }
+	NULLFREE(reader->csystem_data);
+	return csystem->card_init(reader, atr) ? 1 : 0;
+}
+
+void cardreader_do_fast_reset(struct s_reader *reader)
+{
+	if(!reader)
+		{ return; }
+
+	if(reader->fast_reset <= 0 || reader->card_status != CARD_INSERTED || !reader->csystem_active || !reader_is_conax(reader))
+	{
+		reader->fast_reset_queued = 0;
+		return;
+	}
+
+	ATR atr;
+	int32_t ret;
+	// Set running before clearing queued so the periodic checker cannot queue a duplicate reset.
+	reader->fr_ms_atr = reader->fr_ms_flush = reader->fr_ms_pps = reader->fr_ms_set = 0;
+	reader->fast_reset_running = 1;
+	reader->fast_reset_queued = 0;
+	// Keep CARD_INSERTED so matching_reader() and dvbapi do not temporarily drop this reader.
+	// Pending ECM jobs are allowed to finish before this maintenance job is scheduled.
+	struct timeb fr_start, fr_end;
+	cs_ftime(&fr_start);
+	int8_t lean = 0;
+	const struct s_cardreader *crdr_ops = reader->crdr;
+	// TCMG-style lean reset: only when the card does not need a PPS after every reset
+	if(crdr_ops && crdr_ops->lean_reset && reader->pps_state != 1 && !reader->fast_reset_lean_bad && reader->fast_reset_nocardinit)
+	{
+		if(crdr_ops->lean_reset(reader) == 0)
+		{
+			lean = 1; ret = 1;
+			// A PPS-switched card must prove it still answers at the working speed: Conax record read
+			// (same command as the card init). If it does not, drop to the normal reset and stop using lean.
+			if(reader->pps_state == 1 && reader_is_conax(reader))
+			{
+				static const uint8_t probe[] = { 0xDD, 0x26, 0x00, 0x00, 0x03, 0x10, 0x01, 0x40 };
+				uint8_t rsp[CTA_RES_LEN]; uint16_t lr = 0;
+				if(ICC_Async_CardWrite(reader, (uint8_t *)probe, sizeof(probe), rsp, &lr) != OK || lr < 1 || rsp[0] != 0x98)
+				{
+					rdr_log(reader, "[lean probe failed -> normal reset from now on]");
+					reader->fast_reset_lean_bad = 1;
+					lean = 0; ret = 0;
+				}
+			}
+		}
+	}
+	if(!lean)
+	{
+		ret = ICC_Async_Reset(reader, &atr, reader_activate_card_fast, reader_fast_cardsystem);
+		if(ret == 0)
+		{
+			if(reader_activate_card_fast(reader, &atr, reader->deprecated))
+				{ ret = !reader->fast_reset_nocardinit ? reader_fast_cardsystem(reader, &atr) : 1; }
+		}
+	}
+	cs_ftime(&fr_end);
+	reader->fast_reset_last = time(NULL);
+	reader->fast_reset_running = 0;
+	{
+		int64_t fr_ms = comp_timeb(&fr_end, &fr_start);
+		char fr_line[160];
+		if(lean)
+			{ snprintf(fr_line, sizeof(fr_line), "[lean, total %"PRId64"]", fr_ms); }
+		else
+			{ snprintf(fr_line, sizeof(fr_line), "[reset+ATR %d, flush %d, PPS %d, settings %d, total %"PRId64"]",
+					   reader->fr_ms_atr, reader->fr_ms_flush, reader->fr_ms_pps, reader->fr_ms_set, fr_ms); }
+		rdr_log_dbg(reader, D_READER, "fast reset detail: path=%s pps_state=%d nocardinit=%d lean_bad=%d ret=%d",
+					lean ? "lean" : "normal", reader->pps_state, reader->fast_reset_nocardinit, reader->fast_reset_lean_bad, ret);
+		if(ret > 0)
+		{
+			if(fr_ms > 1500)
+				{ rdr_log(reader, "%s SLOW", fr_line); }
+			else if(!lean)
+				{ rdr_log(reader, "%s", fr_line); }
+			else
+				{ rdr_log_dbg(reader, D_READER, "%s", fr_line); }
+		}
+		else if(ret == 0)
+			{ rdr_log(reader, "%s FAILED -> full reset", fr_line); }
+		else
+			{ rdr_log(reader, "%s FAILED", fr_line); }
+	}
+
+	if(ret > 0)
+	{
+		reader->card_status = CARD_INSERTED;
+		if(!reader->fast_reset_nocardinfo)
+			{ cardreader_get_card_info(reader); }
+		rdr_log_dbg(reader, D_READER, "fast reset ok");
+	}
+	else if(ret < 0)
+	{
+		reader->card_status = CARD_INSERTED;
+	}
+	else
+	{
+		reader->card_status = CARD_NEED_INIT;
+		cardreader_do_reset(reader);
+	}
+}
+
+// Called every second from the client check loop.
+static void cardreader_fast_reset_check(struct s_client *cl, struct s_reader *rdr)
+{
+	if(!cl || !rdr || rdr->fast_reset <= 0 || rdr->fast_reset_queued || rdr->fast_reset_running ||
+			rdr->card_status != CARD_INSERTED || !rdr->csystem_active || !reader_is_conax(rdr))
+		{ return; }
+
+	time_t now = time(NULL);
+	time_t activity = cl->lastecm;
+
+	if(rdr->fast_reset_idle > 0)
+	{
+		if(rdr->fast_reset_paused)
+		{
+			if(activity > rdr->fast_reset_last) // activity again: resume with a fresh interval
+			{
+				rdr->fast_reset_paused = 0;
+				rdr->fast_reset_last = now;
+			}
+			return;
+		}
+		if(activity && now - activity >= rdr->fast_reset_idle)
+		{
+			rdr->fast_reset_paused = 1;
+			return;
+		}
+	}
+
+	if(!rdr->fast_reset_last)
+		{ rdr->fast_reset_last = now; return; }
+	if(now - rdr->fast_reset_last < rdr->fast_reset)
+		{ return; }
+
+	// Never put a maintenance reset ahead of requests already waiting for a CW.
+	if(job_ecm_waiting(cl))
+		{ return; }
+
+	rdr->fast_reset_queued = 1;
+	if(!add_job(cl, ACTION_READER_FAST_RESET, NULL, 0))
+		{ rdr->fast_reset_queued = 0; }
 }
 
 static int32_t cardreader_device_init(struct s_reader *reader)
@@ -319,6 +495,7 @@ void cardreader_checkhealth(struct s_client *cl, struct s_reader *rdr)
 {
 	if(!rdr || !rdr->enable || !rdr->active)
 		{ return; }
+	cardreader_fast_reset_check(cl, rdr);
 	add_job(cl, ACTION_READER_CHECK_HEALTH, NULL, 0);
 }
 
