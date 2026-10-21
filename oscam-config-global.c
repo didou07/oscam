@@ -583,6 +583,14 @@ static const struct config_list webif_opts[] =
 	DEF_OPT_STR("httppwd"                   , OFS(http_pwd)                 , NULL),
 	DEF_OPT_STR("httpcss"                   , OFS(http_css)                 , NULL),
 	DEF_OPT_STR("httpjscript"               , OFS(http_jscript)             , NULL),
+	DEF_OPT_STR("httpsellername"            , OFS(http_seller_name)         , NULL),
+	DEF_OPT_STR("httpsellertype"            , OFS(http_seller_type)         , NULL),
+	DEF_OPT_STR("httpsellerhost"            , OFS(http_seller_host)         , NULL),
+	DEF_OPT_STR("httpsellerproto"           , OFS(http_seller_proto)        , NULL),
+	DEF_OPT_STR("httpsellerprefix"          , OFS(http_seller_prefix)       , NULL),
+	DEF_OPT_INT32("httpsellerport"          , OFS(http_seller_port)         , 0),
+	DEF_OPT_INT8("httpsellershowkey"        , OFS(http_seller_showkey)      , 1),
+	DEF_OPT_STR("httpsellerkey"             , OFS(http_seller_key)          , NULL),
 	DEF_OPT_STR("httpscript"                , OFS(http_script)              , NULL),
 	DEF_OPT_STR("httptpl"                   , OFS(http_tpl)                 , NULL),
 	DEF_OPT_STR("httppiconpath"             , OFS(http_piconpath)           , NULL),
@@ -967,6 +975,10 @@ static const struct config_list streamrelay_opts[] =
 	DEF_OPT_STR("stream_source_auth_password"    , OFS(stream_source_auth_password),  NULL),
 	DEF_OPT_UINT32("stream_relay_buffer_time"    , OFS(stream_relay_buffer_time),     0),
 	DEF_OPT_UINT8("stream_relay_reconnect_count" , OFS(stream_relay_reconnect_count), 0),
+#ifdef WITH_EMU
+	DEF_OPT_INT8("stream_emm_enabled"            , OFS(emu_stream_emm_enabled),       0),
+	DEF_OPT_UINT32("stream_ecm_delay"            , OFS(emu_stream_ecm_delay),         600),
+#endif
 	DEF_OPT_INT8("stream_display_client"         , OFS(stream_display_client),        0),
 	DEF_OPT_INT8("stream_reuse_client"           , OFS(stream_reuse_client),          0),
 #ifdef WEBIF

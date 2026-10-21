@@ -201,8 +201,9 @@ static void tpl_add_group_limit_vars(struct templatevars *vars)
 #define MNU_GBX_FSTAINF     27
 #define MNU_GBX_FEXPINF     28
 #define MNU_GBX_INFOLOG     29
+#define MNU_CFG_FSOFTCAMKEY 30
 
-#define MNU_CFG_TOTAL_ITEMS 30 // sum of items above. Use it for "All inactive" in function calls too.
+#define MNU_CFG_TOTAL_ITEMS 31 // sum of items above. Use it for "All inactive" in function calls too.
 
 static void set_status_info_var(struct templatevars *vars, char *varname, int no_data, char *fmt, double value)
 {
@@ -1388,6 +1389,11 @@ static char *send_oscam_config_streamrelay(struct templatevars *vars, struct uri
 
 	tpl_printf(vars, TPLADD, "STREAM_RELAY_BUFFER_TIME", "%d", cfg.stream_relay_buffer_time);
 	tpl_printf(vars, TPLADD, "STREAM_RELAY_RECONNECT_COUNT", "%d", cfg.stream_relay_reconnect_count);
+#ifdef WITH_EMU
+	tpl_printf(vars, TPLADD, "TMP", "STREAMEMMENABLEDSELECTED%d", cfg.emu_stream_emm_enabled);
+	tpl_addVar(vars, TPLADD, tpl_getVar(vars, "TMP"), "selected");
+	tpl_printf(vars, TPLADD, "STREAM_ECM_DELAY", "%d", cfg.emu_stream_ecm_delay);
+#endif
 
 	tpl_printf(vars, TPLADD, "TMP", "STREAMCONFIGCLIENTSELECTED%d", cfg.stream_display_client);
 	tpl_addVar(vars, TPLADD, tpl_getVar(vars, "TMP"), "selected");
@@ -1574,6 +1580,21 @@ static char *send_oscam_config_webif(struct templatevars *vars, struct uriparams
 	tpl_addVar(vars, TPLADD, "HTTPPICONPATH", cfg.http_piconpath);
 	tpl_addVar(vars, TPLADD, "HTTPSCRIPT", cfg.http_script);
 	tpl_addVar(vars, TPLADD, "HTTPJSCRIPT", cfg.http_jscript);
+	tpl_addVar(vars, TPLADD, "HTTPSELLERNAME", xml_encode(vars, cfg.http_seller_name ? cfg.http_seller_name : ""));
+	tpl_addVar(vars, TPLADD, "HTTPSELLERHOST", xml_encode(vars, cfg.http_seller_host ? cfg.http_seller_host : ""));
+	tpl_addVar(vars, TPLADD, "HTTPSELLERPROTO", xml_encode(vars, cfg.http_seller_proto ? cfg.http_seller_proto : ""));
+	tpl_addVar(vars, TPLADD, "HTTPSELLERPREFIX", xml_encode(vars, cfg.http_seller_prefix ? cfg.http_seller_prefix : ""));
+	tpl_addVar(vars, TPLADD, "HTTPSELLERKEY", xml_encode(vars, cfg.http_seller_key ? cfg.http_seller_key : ""));
+	tpl_printf(vars, TPLADD, "HTTPSELLERPORT", "%d", cfg.http_seller_port);
+	if(cfg.http_seller_showkey > 0) { tpl_addVar(vars, TPLADD, "SELLERSHOWKEYCHECKED", "checked"); }
+	if(cfg.http_seller_type && !strcmp(cfg.http_seller_type, "custom"))
+		{ tpl_addVar(vars, TPLADD, "SELLERTYPECUSTOM", "selected"); }
+	else if(cfg.http_seller_type && !strcmp(cfg.http_seller_type, "newcamd"))
+		{ tpl_addVar(vars, TPLADD, "SELLERTYPENEWCAMD", "selected"); }
+	else if(cfg.http_seller_type && !strcmp(cfg.http_seller_type, "cs378x"))
+		{ tpl_addVar(vars, TPLADD, "SELLERTYPECS378X", "selected"); }
+	else
+		{ tpl_addVar(vars, TPLADD, "SELLERTYPECCCAM", "selected"); }
 #ifndef WEBIF_JQUERY
 	tpl_addVar(vars, TPLADD, "HTTPEXTERNJQUERY", cfg.http_extern_jquery);
 #endif
@@ -2510,7 +2531,7 @@ static char *send_oscam_reader_config(struct templatevars *vars, struct uriparam
 		chk_reader("services", servicelabels, rdr);
 		chk_reader("lb_whitelist_services", servicelabelslb, rdr);
 
-		if(is_network_reader(rdr))    //physical readers make trouble if re-started
+		if(is_network_reader(rdr) || rdr->typ == R_EMU)    //physical readers make trouble if re-started
 		{
 			if(rdr)
 				{
@@ -3312,6 +3333,8 @@ static char *send_oscam_reader_config(struct templatevars *vars, struct uriparam
 	tpl_printf(vars, TPLADD, "RESHARE",      "%d", cfg.cc_reshare);
 	tpl_printf(vars, TPLADD, "CCCRECONNECT", "%d", rdr->cc_reconnect);
 
+	if(rdr->cc_want_emu)
+		{ tpl_addVar(vars, TPLADD, "CCCWANTEMUCHECKED", "checked"); }
 	if(rdr->cc_keepalive)
 		{ tpl_addVar(vars, TPLADD, "KEEPALIVECHECKED", "checked"); }
 #endif
@@ -3349,6 +3372,23 @@ static char *send_oscam_reader_config(struct templatevars *vars, struct uriparam
 	tpl_addVar(vars, TPLADD, "USERSCRIPT", rdr->userscript);
 #endif
 
+#ifdef WITH_EMU
+	//emu_auproviders
+	value = mk_t_ftab(&rdr->emu_auproviders);
+	tpl_addVar(vars, TPLADD, "EMUAUPROVIDERS", value);
+	free_mk_t(value);
+
+	// Date-coded BISS keys
+	if(!apicall)
+	{
+		tpl_addVar(vars, TPLADD, "EMUDATECODEDENABLED", (rdr->emu_datecodedenabled == 1) ? "checked" : "");
+	}
+	else
+	{
+		tpl_addVar(vars, TPLADD, "EMUDATECODEDENABLED", (rdr->emu_datecodedenabled == 1) ? "1" : "0");
+	}
+#endif
+
 	tpl_addVar(vars, TPLADD, "PROTOCOL", reader_get_type_desc(rdr, 0));
 
 	// Show only parameters which needed for the reader
@@ -3369,6 +3409,9 @@ static char *send_oscam_reader_config(struct templatevars *vars, struct uriparam
 		break;
 	case R_CAMD35 :
 		tpl_addVar(vars, TPLAPPEND, "READERDEPENDINGCONFIG", tpl_getTpl(vars, "READERCONFIGCAMD35BIT"));
+		break;
+	case R_EMU :
+		tpl_addVar(vars, TPLAPPEND, "READERDEPENDINGCONFIG", tpl_getTpl(vars, "READERCONFIGEMUBIT"));
 		break;
 	case R_CS378X :
 		tpl_addVar(vars, TPLAPPEND, "READERDEPENDINGCONFIG", tpl_getTpl(vars, "READERCONFIGCS378XBIT"));
@@ -4586,6 +4629,61 @@ static void kill_account_thread(struct s_auth *account)
 	}
 }
 
+// Escape a string for use inside a JSON/JS string literal embedded in the page
+static void seller_js_escape(const char *in, char *out, size_t outlen)
+{
+	size_t o = 0;
+	if(!in) { in = ""; }
+	for(; *in && o + 8 < outlen; in++)
+	{
+		unsigned char c = (unsigned char)*in;
+		if(c == '"' || c == '\\')
+			{ out[o++] = '\\'; out[o++] = (char)c; }
+		else if(c < 0x20 || c == '<' || c == '>' || c == '&' || c == '\'')
+			{ o += (size_t)snprintf(out + o, outlen - o, "\\u%04x", c); }
+		else
+			{ out[o++] = (char)c; }
+	}
+	out[o] = '\0';
+}
+
+// Seller card data for the users page: name/type/host from [webif] plus the server ports and newcamd key
+static void webif_seller_json(struct templatevars *vars)
+{
+	char nm[256], ho[256], ty[32], key[64], lb[256], pf[64], mk[128];
+	int32_t cc = 0, ncd = 0, c35 = 0;
+	const char *type = cfg.http_seller_type ? cfg.http_seller_type : "cccam";
+	if(strcmp(type, "newcamd") && strcmp(type, "cs378x") && strcmp(type, "custom")) { type = "cccam"; }
+	seller_js_escape(cfg.http_seller_name, nm, sizeof(nm));
+	seller_js_escape(cfg.http_seller_host, ho, sizeof(ho));
+	seller_js_escape(type, ty, sizeof(ty));
+	seller_js_escape(cfg.http_seller_proto, lb, sizeof(lb));
+	seller_js_escape(cfg.http_seller_prefix, pf, sizeof(pf));
+	seller_js_escape(cfg.http_seller_key, mk, sizeof(mk));
+	key[0] = '\0';
+#ifdef MODULE_CCCAM
+	cc = cfg.cc_port[0];
+#endif
+#ifdef MODULE_NEWCAMD
+	if(cfg.ncd_ptab.nports > 0) { ncd = cfg.ncd_ptab.ports[0].s_port; }
+	{
+		int32_t i;
+		for(i = 0; i < 14; i++)
+			{ snprintf(key + i * 2, sizeof(key) - (size_t)i * 2, "%02X", cfg.ncd_key[i]); }
+	}
+#endif
+#ifdef MODULE_CAMD35_TCP
+	if(cfg.c35_tcp_ptab.nports > 0) { c35 = cfg.c35_tcp_ptab.ports[0].s_port; }
+#endif
+	// DES key on the card: only when enabled; a manually entered key wins over the newcamd server key
+	if(cfg.http_seller_showkey <= 0) { key[0] = '\0'; }
+	else if(cfg.http_seller_key && cfg.http_seller_key[0]) { cs_strncpy(key, mk, sizeof(key)); }
+	else if(strcmp(type, "newcamd")) { key[0] = '\0'; }
+	tpl_printf(vars, TPLADD, "SELLERJSON",
+		"\"name\":\"%s\",\"type\":\"%s\",\"host\":\"%s\",\"key\":\"%s\",\"label\":\"%s\",\"prefix\":\"%s\",\"customPort\":%d,\"ports\":{\"cccam\":%d,\"newcamd\":%d,\"cs378x\":%d}",
+		nm, ty, ho, key, lb, pf, cfg.http_seller_port, cc, ncd, c35);
+}
+
 static char *send_oscam_user_config(struct templatevars *vars, struct uriparams *params, int32_t apicall)
 {
 	struct s_auth *account;
@@ -4597,6 +4695,7 @@ static char *send_oscam_user_config(struct templatevars *vars, struct uriparams 
 	if(!apicall)
 	{
 		setActiveMenu(vars, MNU_USERS);
+		webif_seller_json(vars);
 	}
 	if(strcmp(getParam(params, "action"), "reinit") == 0)
 	{
@@ -5409,9 +5508,34 @@ static char *send_oscam_entitlement(struct templatevars *vars, struct uriparams 
 
 					tpl_addVar(vars, TPLAPPEND, "LOGHISTORY", "<BR><BR>New Structure:<BR>");
 					char tbuffer[83];
+#ifdef WITH_EMU
+					char keyBuffer[1024];
+#endif
 					int jsondelimiter = 0;
 					while((item = ll_iter_next(&itr)))
 					{
+#ifdef WITH_EMU
+						if(item->isKey)
+						{
+							tpl_addVar(vars, TPLADD, "ENTSTARTDATE", "");
+							tpl_addVar(vars, TPLADD, "ENTENDDATE", "");
+							cs_hexdump(0, item->key, item->keyLength, keyBuffer, sizeof(keyBuffer));
+							tpl_addVar(vars, TPLADD, "ENTEXPIERED", "e_valid");
+							tpl_printf(vars, TPLADD, "ENTCAID", "%04X", item->caid);
+							tpl_printf(vars, TPLADD, "ENTPROVID", "%08X", item->provid);
+							tpl_addVar(vars, TPLADD, "ENTID", item->name);
+							tpl_addVar(vars, TPLADD, "ENTCLASS", keyBuffer);
+							if(item->isData) { tpl_addVar(vars, TPLADD, "ENTTYPE", "data"); }
+							else { tpl_addVar(vars, TPLADD, "ENTTYPE", "key"); }
+							tpl_addVar(vars, TPLADD, "ENTRESNAME", "");
+
+							if((strcmp(getParam(params, "hideexpired"), "1") != 0) || (item->end > now))
+								{ tpl_addVar(vars, TPLAPPEND, "READERENTENTRY", tpl_getTpl(vars, "ENTITLEMENTITEMBIT")); }
+
+							continue;
+						}
+#endif
+
 						localtime_r(&item->start, &start_t);
 						localtime_r(&item->end, &end_t);
 
@@ -5908,6 +6032,9 @@ static char *send_oscam_status(struct templatevars * vars, struct uriparams * pa
 						filtered = (type == cl->typ) || (type == 'x' && (cl->typ == 'p' || cl->typ == 'r') && (cl->reader && cl->reader->cacheex.mode));
 #else
 						filtered = (type == cl->typ);
+#endif
+#ifdef WITH_EMU
+						if(type == 'e' && cl->typ == 'r' && cl->reader->typ == R_EMU) filtered = 1;
 #endif
 					}
 				}
@@ -7519,6 +7646,9 @@ static char *send_oscam_files(struct templatevars * vars, struct uriparams * par
 		{ "expired.info",    MNU_GBX_FEXPINF,   FTYPE_GBOX },     // id 28
 		{ "info.log",        MNU_GBX_INFOLOG,   FTYPE_GBOX },     // id 29
 #endif
+#ifdef WITH_EMU
+		{ "SoftCam.Key",     MNU_CFG_FSOFTCAMKEY,FTYPE_CONFIG },  // id 30
+#endif
 		{ NULL, 0, 0 },
 	};
 
@@ -7990,7 +8120,11 @@ static char *send_oscam_EMM_running(struct templatevars * vars, struct uriparams
 		else if(!proxy && rdr->csystem_active)     // local active reader
 		{
 			csystem = rdr->csystem;
-			caid = rdr->caid;
+
+			if(rdr->typ != R_EMU)
+			{
+				caid = rdr->caid;
+			}
 		}
 
 		if(csystem)
@@ -9230,7 +9364,11 @@ static int8_t check_request(char *result, int32_t readen)
 static int32_t readRequest(FILE * f, IN_ADDR_T in, char **result, int8_t forcePlain)
 {
 	int32_t n, bufsize = 0, errcount = 0;
+#ifdef WITH_EMU
+	const int32_t max_request_size = cfg.http_max_request_size > 0 ? cfg.http_max_request_size : 204800;
+#else
 	const int32_t max_request_size = cfg.http_max_request_size > 0 ? cfg.http_max_request_size : 102400;
+#endif
 	char buf2[1024];
 #ifdef WITH_SSL
 	int8_t is_ssl = 0;

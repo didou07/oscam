@@ -1,6 +1,8 @@
 #ifndef CONFIG_H_
 #define CONFIG_H_
 
+#define WITH_EMU 1
+#define WITH_SOFTCAM 1
 #define WEBIF 1
 #define WEBIF_LIVELOG 1
 #define WEBIF_JQUERY 1
@@ -9,7 +11,7 @@
 //#define WITH_SSL 1
 #if defined(__linux__) || defined(__CYGWIN__)
 #define HAVE_DVBAPI 1
-//#define WITH_EXTENDED_CW 1
+#define WITH_EXTENDED_CW 1
 #endif
 #define WITH_NEUTRINO 1
 #define READ_SDT_CHARSETS 1
@@ -19,12 +21,12 @@
 #define WITH_LB 1
 #define CS_CACHEEX 1
 #define CS_CACHEEX_AIO 1
-#define CW_CYCLE_CHECK 1
-#define LCDSUPPORT 1
-#define LEDSUPPORT 1
-#define IPV6SUPPORT 1
+//#define CW_CYCLE_CHECK 1
+//#define LCDSUPPORT 1
+//#define LEDSUPPORT 1
+//#define IPV6SUPPORT 1
 //#define WITH_ARM_NEON 1
-#define WITH_SIGNING 1
+//#define WITH_SIGNING 1
 #define MODULE_MONITOR 1
 
 #define MODULE_CAMD33 1

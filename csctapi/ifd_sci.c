@@ -483,6 +483,8 @@ static int32_t Sci_LeanReset(struct s_reader *reader)
 	tcflush(reader->handle, TCIFLUSH);
 	cs_sleepms(50);
 
+	struct timeb lr_t0, lr_t1;
+	cs_ftime(&lr_t0);
 	if(ioctl(reader->handle, IOCTL_SET_RESET, 1) < 0)
 	{
 		rdr_log(reader, "Error:%s ioctl(IOCTL_SET_RESET) failed.(%d:%s)", __FUNCTION__, errno, strerror(errno));
@@ -492,6 +494,8 @@ static int32_t Sci_LeanReset(struct s_reader *reader)
 	ATR atr;
 	if(Sci_Read_ATR(reader, &atr) == ERROR)
 		{ return ERROR; }
+	cs_ftime(&lr_t1);
+	reader->fr_ms_atr = (int32_t)comp_timeb(&lr_t1, &lr_t0);
 
 	uint8_t raw[ATR_MAX_SIZE];
 	uint32_t raw_len = 0;
@@ -509,10 +513,13 @@ static int32_t Sci_LeanReset(struct s_reader *reader)
 	}
 
 	// restore the working parameters of the last full init (trailing settle time is inside)
+	cs_ftime(&lr_t0);
 	reader->fast_reset_in_lean = 1;
 	Sci_WriteSettings(reader, crdr_data->T, crdr_data->fs, crdr_data->ETU, crdr_data->WWT, crdr_data->CWT,
 					  crdr_data->BWT, crdr_data->EGT, crdr_data->P, crdr_data->I);
 	reader->fast_reset_in_lean = 0;
+	cs_ftime(&lr_t1);
+	reader->fr_ms_set = (int32_t)comp_timeb(&lr_t1, &lr_t0);
 	return OK;
 }
 

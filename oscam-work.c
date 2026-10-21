@@ -181,6 +181,8 @@ void *work_thread(void *ptr)
 			{
 				if(!cl->kill && cl->typ != 'r')
 					{ client_check_status(cl); } // do not call for physical readers as this might cause an endless job loop
+				else if(!cl->kill && cl->typ == 'r' && cl->reader)
+					{ cardreader_fast_reset_idle_check(cl, cl->reader); } // only schedules a fast reset when one is due and no ECM is waiting
 
 				SAFE_MUTEX_LOCK(&cl->thread_lock);
 				if(cl->joblist && ll_count(cl->joblist) > 0)

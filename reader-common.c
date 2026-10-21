@@ -15,6 +15,7 @@
 #include "reader-common.h"
 //#include "csctapi/atr.h"
 #include "csctapi/icc_async.h"
+#include "readers.h" // required by the EMU reader
 
 extern const struct s_cardsystem *cardsystems[];
 extern char *RDR_CD_TXT[];
@@ -153,6 +154,18 @@ void cardreader_poll_status(struct s_reader *reader)
 static int32_t reader_get_cardsystem(struct s_reader *reader, ATR *atr)
 {
 	int32_t i;
+
+#ifdef WITH_EMU
+	if(reader->typ == R_EMU)
+	{
+		NULLFREE(reader->csystem_data);
+		rdr_log(reader, "found card system %s", reader_emu.desc);
+		reader->csystem = &reader_emu;
+		reader->csystem_active = true;
+		led_status_found_cardsystem();
+		return (reader->csystem_active);
+	}
+#endif
 
 	for(i = 0; cardsystems[i]; i++)
 	{
@@ -356,7 +369,7 @@ void cardreader_do_fast_reset(struct s_reader *reader)
 		int64_t fr_ms = comp_timeb(&fr_end, &fr_start);
 		char fr_line[160];
 		if(lean)
-			{ snprintf(fr_line, sizeof(fr_line), "[lean, total %"PRId64"]", fr_ms); }
+			{ snprintf(fr_line, sizeof(fr_line), "[lean: reset+ATR %d, settings %d, total %"PRId64"]", reader->fr_ms_atr, reader->fr_ms_set, fr_ms); }
 		else
 			{ snprintf(fr_line, sizeof(fr_line), "[reset+ATR %d, flush %d, PPS %d, settings %d, total %"PRId64"]",
 					   reader->fr_ms_atr, reader->fr_ms_flush, reader->fr_ms_pps, reader->fr_ms_set, fr_ms); }
@@ -366,10 +379,8 @@ void cardreader_do_fast_reset(struct s_reader *reader)
 		{
 			if(fr_ms > 1500)
 				{ rdr_log(reader, "%s SLOW", fr_line); }
-			else if(!lean)
-				{ rdr_log(reader, "%s", fr_line); }
 			else
-				{ rdr_log_dbg(reader, D_READER, "%s", fr_line); }
+				{ rdr_log(reader, "%s", fr_line); }
 		}
 		else if(ret == 0)
 			{ rdr_log(reader, "%s FAILED -> full reset", fr_line); }
@@ -488,6 +499,15 @@ int32_t cardreader_do_checkhealth(struct s_reader *reader)
 				reader->card_status, reader->card_status == CARD_INSERTED);
 
 	return reader->card_status == CARD_INSERTED;
+}
+
+// Called from the reader thread when it has just run out of jobs: a moment where no ECM is waiting,
+// so an overdue fast reset can go in right away instead of waiting for the next 1 s health tick.
+void cardreader_fast_reset_idle_check(struct s_client *cl, struct s_reader *rdr)
+{
+	if(!rdr || !rdr->enable || !rdr->active)
+		{ return; }
+	cardreader_fast_reset_check(cl, rdr);
 }
 
 // Check for card inserted or card removed on pysical reader

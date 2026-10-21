@@ -57,6 +57,26 @@
 					</select>
 				</TD>
 			</TR>
+			<TR><TH COLSPAN="2">Seller card settings</TH></TR>
+			<TR><TD><A>Seller name:</A></TD><TD><input name="httpsellername" type="text" maxlength="63" value="##HTTPSELLERNAME##"></TD></TR>
+			<TR><TD><A>Seller server type:</A></TD><TD><select name="httpsellertype"><option value="cccam" ##SELLERTYPECCCAM##>CCcam</option><option value="newcamd" ##SELLERTYPENEWCAMD##>Newcamd</option><option value="cs378x" ##SELLERTYPECS378X##>CS378X</option><option value="custom" ##SELLERTYPECUSTOM##>Custom...</option></select></TD></TR>
+			<TR class="sellercustom"><TD><A>Protocol name:</A></TD><TD><input name="httpsellerproto" type="text" maxlength="31" value="##HTTPSELLERPROTO##"> shown on the card, e.g. Gbox</TD></TR>
+			<TR class="sellercustom"><TD><A>Port:</A></TD><TD><input name="httpsellerport" class="short" type="text" maxlength="5" value="##HTTPSELLERPORT##"></TD></TR>
+			<TR class="sellercustom"><TD><A>Line prefix:</A></TD><TD><input name="httpsellerprefix" class="short" type="text" maxlength="7" value="##HTTPSELLERPREFIX##"> e.g. C: or N: (optional)</TD></TR>
+			<TR><TD><A>Show DES key on card:</A></TD><TD><input name="httpsellershowkey" value="0" type="hidden"><input name="httpsellershowkey" type="checkbox" value="1" ##SELLERSHOWKEYCHECKED##><label></label></TD></TR>
+			<TR class="sellerkey"><TD><A>DES key:</A></TD><TD><input name="httpsellerkey" type="text" maxlength="63" value="##HTTPSELLERKEY##"> empty = use the Newcamd server key</TD></TR>
+			<script type="text/javascript">
+			(function(){
+				var f = document.forms[0], sel = f.elements["httpsellertype"], chk = f.querySelectorAll('input[name="httpsellershowkey"][type="checkbox"]')[0];
+				function upd(){
+					var i, r = document.querySelectorAll("tr.sellercustom"), k = document.querySelectorAll("tr.sellerkey");
+					for(i = 0; i < r.length; i++) r[i].style.display = sel.value === "custom" ? "" : "none";
+					for(i = 0; i < k.length; i++) k[i].style.display = chk.checked ? "" : "none";
+				}
+				sel.addEventListener("change", upd); chk.addEventListener("change", upd); upd();
+			})();
+			</script>
+			<TR><TD><A>Seller host:</A></TD><TD><input name="httpsellerhost" type="text" maxlength="127" value="##HTTPSELLERHOST##"></TD></TR>
 			<TR><TH COLSPAN="2">Script settings</TH></TR>
 			<TR><TD><A>Http javascript:</A></TD><TD><input name="httpjscript" type="text" maxlength="127" value="##HTTPJSCRIPT##"></TD></TR>
 			<TR><TD><A>Http script:</A></TD><TD><input name="httpscript" type="text" maxlength="127" value="##HTTPSCRIPT##"></TD></TR>

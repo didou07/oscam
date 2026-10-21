@@ -3029,3 +3029,805 @@ $(document).ready(function() {
 		}
 	});
 });
+
+/* ===== Seller card + country flags (ported from TCMG WebIF) ===== */
+(function () {
+  "use strict";
+
+  function oscToast(msg, kind) {
+    var t = document.createElement("div");
+    t.className = "osctoast " + (kind || "");
+    t.textContent = msg;
+    document.body.appendChild(t);
+    setTimeout(function () {
+      if (t.parentNode) t.parentNode.removeChild(t);
+    }, kind === "err" ? 5000 : 2600);
+  }
+
+  function oscCss() {
+    if (document.getElementById("oscCardCss")) return;
+    var s = document.createElement("style");
+    s.id = "oscCardCss";
+    s.textContent =
+      ".cardmo{position:fixed;top:0;left:0;right:0;bottom:0;z-index:100000;display:flex;align-items:center;justify-content:center;padding:16px;background:rgba(0,0,0,.72)}" +
+      ".cardmo-box{display:flex;flex-direction:column;align-items:center;gap:12px;max-width:560px;max-width:min(560px,100%);max-height:100%}" +
+      ".cardmo-img{display:block;max-width:100%;max-height:calc(100vh - 110px);width:auto;height:auto;border-radius:18px;box-shadow:0 20px 60px -10px rgba(0,0,0,.8)}" +
+      ".cardmo-act{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}" +
+      ".oscbtn{font:600 13px system-ui,Arial,sans-serif;padding:8px 16px;border-radius:8px;border:1px solid rgba(255,255,255,.35);background:rgba(255,255,255,.12);color:#fff;cursor:pointer}" +
+      ".oscbtn.pri{background:#2f7df6;border-color:#2f7df6}" +
+      ".osctoast{position:fixed;right:18px;bottom:18px;z-index:100001;padding:10px 16px;border-radius:8px;background:#1f7a3d;color:#fff;font:600 13px system-ui,Arial,sans-serif;box-shadow:0 6px 20px rgba(0,0,0,.4)}" +
+      ".osctoast.err{background:#b3261e}" +
+      "a.cardbtn{text-decoration:none;cursor:pointer}" +
+      ".oscflag{display:inline-block;min-width:18px;margin-right:5px;vertical-align:middle}" +
+      ".oscflag:empty{display:none}";
+    document.head.appendChild(s);
+  }
+
+  var CARD_TYPES = { cccam: "CCcam", newcamd: "Newcamd", cs378x: "CS378X", custom: "Custom" };
+  var CARD_SANS = 'system-ui,-apple-system,"Segoe UI",Tahoma,Arial,sans-serif';
+  var CARD_MONO = 'ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace';
+
+  function cardRR(c, x, y, w, h, r) {
+    c.beginPath();
+    c.moveTo(x + r, y);
+    c.arcTo(x + w, y, x + w, y + h, r);
+    c.arcTo(x + w, y + h, x, y + h, r);
+    c.arcTo(x, y + h, x, y, r);
+    c.arcTo(x, y, x + w, y, r);
+    c.closePath();
+  }
+  function cardFit(c, txt, maxW, size, weight, family, min) {
+    var s = size;
+    c.font = weight + " " + s + "px " + family;
+    while (s > min && c.measureText(txt).width > maxW) {
+      s -= 2;
+      c.font = weight + " " + s + "px " + family;
+    }
+    return s;
+  }
+  function cardExpiry(exp) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(exp || "");
+    if (!m) return { kind: "none", date: "Unlimited", badge: "No expiry" };
+    var d = new Date(+m[1], +m[2] - 1, +m[3]),
+      t0 = new Date();
+    t0 = new Date(t0.getFullYear(), t0.getMonth(), t0.getDate());
+    var days = Math.round((d - t0) / 86400000);
+    var txt = m[3] + "-" + m[2] + "-" + m[1];
+    if (days < 0) return { kind: "expired", date: txt, badge: "Expired" };
+    if (days === 0) return { kind: "soon", date: txt, badge: "Expires today" };
+    return {
+      kind: days <= 14 ? "soon" : "ok",
+      date: txt,
+      badge: days + (days === 1 ? " day left" : " days left"),
+    };
+  }
+
+  function cardHexA(h, a) {
+    var n = parseInt(h.slice(1), 16);
+    return "rgba(" + (n >> 16) + "," + ((n >> 8) & 255) + "," + (n & 255) + "," + a + ")";
+  }
+  function cardSpacing(c, px) {
+    if ("letterSpacing" in c) c.letterSpacing = px + "px";
+  }
+
+  function cardIcon(c, kind, cx, cy, col) {
+    c.save();
+    c.translate(cx, cy);
+    c.strokeStyle = col;
+    c.fillStyle = col;
+    c.lineWidth = 2.8;
+    c.lineCap = "round";
+    c.lineJoin = "round";
+    var i, t;
+    switch (kind) {
+      case "globe":
+        c.beginPath();
+        c.arc(0, 0, 12, 0, Math.PI * 2);
+        c.stroke();
+        c.beginPath();
+        c.ellipse(0, 0, 5.5, 12, 0, 0, Math.PI * 2);
+        c.stroke();
+        c.beginPath();
+        c.moveTo(-12, 0);
+        c.lineTo(12, 0);
+        c.stroke();
+        break;
+      case "port":
+        c.beginPath();
+        c.moveTo(0, -6);
+        c.lineTo(0, 1);
+        c.moveTo(0, 1);
+        c.lineTo(-8, 7);
+        c.moveTo(0, 1);
+        c.lineTo(8, 7);
+        c.stroke();
+        [
+          [0, -9],
+          [-9, 9],
+          [9, 9],
+        ].forEach(function (q) {
+          c.beginPath();
+          c.arc(q[0], q[1], 3.6, 0, Math.PI * 2);
+          c.stroke();
+        });
+        break;
+      case "user":
+        c.beginPath();
+        c.arc(0, -6, 6, 0, Math.PI * 2);
+        c.fill();
+        c.beginPath();
+        c.moveTo(-12, 13);
+        c.bezierCurveTo(-12, 1, 12, 1, 12, 13);
+        c.closePath();
+        c.fill();
+        break;
+      case "lock":
+        cardRR(c, -10, -1, 20, 15, 4);
+        c.fill();
+        c.beginPath();
+        c.arc(0, -2, 6.5, Math.PI, 0);
+        c.stroke();
+        c.fillStyle = "rgba(0,0,0,.55)";
+        c.beginPath();
+        c.arc(0, 6, 2.2, 0, Math.PI * 2);
+        c.fill();
+        break;
+      case "key":
+        c.beginPath();
+        c.arc(-7, 0, 6, 0, Math.PI * 2);
+        c.stroke();
+        c.beginPath();
+        c.moveTo(-1, 0);
+        c.lineTo(13, 0);
+        c.moveTo(8, 0);
+        c.lineTo(8, 6);
+        c.moveTo(13, 0);
+        c.lineTo(13, 5);
+        c.stroke();
+        break;
+      case "cal":
+        cardRR(c, -13, -10, 26, 23, 5);
+        c.stroke();
+        c.beginPath();
+        c.moveTo(-13, -3);
+        c.lineTo(13, -3);
+        c.moveTo(-6, -14);
+        c.lineTo(-6, -8);
+        c.moveTo(6, -14);
+        c.lineTo(6, -8);
+        c.stroke();
+        for (i = 0; i < 6; i++) {
+          c.beginPath();
+          c.arc(-6 + (i % 3) * 6, 3 + Math.floor(i / 3) * 6, 1.5, 0, Math.PI * 2);
+          c.fill();
+        }
+        break;
+      case "inf":
+        c.lineWidth = 3.4;
+        c.beginPath();
+        for (t = 0; t <= Math.PI * 2 + 0.05; t += 0.08) {
+          var dn = 1 + Math.sin(t) * Math.sin(t),
+            x = (15 * Math.cos(t)) / dn,
+            y = (15 * Math.sin(t) * Math.cos(t)) / dn;
+          if (t === 0) c.moveTo(x, y);
+          else c.lineTo(x, y);
+        }
+        c.closePath();
+        c.stroke();
+        break;
+      case "dish":
+        c.scale(1.12, 1.12);
+        c.lineWidth = 2.6;
+        c.beginPath();
+        c.moveTo(-17, 24);
+        c.lineTo(1, 24);
+        c.moveTo(-8, 24);
+        c.lineTo(-8, 11);
+        c.stroke();
+        c.save();
+        c.rotate(0.75);
+        c.beginPath();
+        c.moveTo(-22, 0);
+        c.quadraticCurveTo(0, 30, 22, 0);
+        c.closePath();
+        c.globalAlpha = 0.9;
+        c.fill();
+        c.globalAlpha = 1;
+        c.beginPath();
+        c.moveTo(0, 8);
+        c.lineTo(0, -16);
+        c.stroke();
+        c.beginPath();
+        c.arc(0, -18, 3.4, 0, Math.PI * 2);
+        c.fill();
+        c.restore();
+        for (i = 1; i <= 2; i++) {
+          c.beginPath();
+          c.arc(12.5, -13.5, 3 + i * 7, -1.25, -0.3);
+          c.stroke();
+        }
+        break;
+    }
+    c.restore();
+  }
+  function cardRing(c, kind, cx, cy, r, col) {
+    c.beginPath();
+    c.arc(cx, cy, r, 0, Math.PI * 2);
+    c.fillStyle = cardHexA(col, 0.14);
+    c.fill();
+    c.lineWidth = 2.5;
+    c.strokeStyle = cardHexA(col, 0.9);
+    c.stroke();
+    cardIcon(c, kind, cx, cy, col);
+  }
+
+  function cardTypeTag(c, d, acc, rightX, cy) {
+    var h = 64,
+      sk = 0.3,
+      off = 8,
+      g;
+    c.font = "800 32px " + CARD_SANS;
+    var tw = c.measureText(d.typeLabel).width,
+      w = tw + 76,
+      x = rightX - w - off - (sk * h) / 2;
+    function plate(dx, dy) {
+      c.beginPath();
+      c.save();
+      c.translate(dx, cy + dy);
+      c.transform(1, 0, -sk, 1, 0, 0);
+      cardRR(c, x, -h / 2, w, h, 14);
+      c.restore();
+    }
+    c.save();
+    c.translate(off, cy + off);
+    c.transform(1, 0, -sk, 1, 0, 0);
+    cardRR(c, x, -h / 2, w, h, 14);
+    c.restore();
+    c.lineWidth = 2.5;
+    c.strokeStyle = cardHexA(acc[0], 0.75);
+    c.stroke();
+    c.save();
+    c.translate(0, cy);
+    c.transform(1, 0, -sk, 1, 0, 0);
+    c.shadowColor = cardHexA(acc[0], 0.55);
+    c.shadowBlur = 28;
+    cardRR(c, x, -h / 2, w, h, 14);
+    g = c.createLinearGradient(x, 0, x + w, 0);
+    g.addColorStop(0, acc[0]);
+    g.addColorStop(1, acc[1]);
+    c.fillStyle = g;
+    c.fill();
+    c.shadowBlur = 0;
+    c.save();
+    cardRR(c, x, -h / 2, w, h, 14);
+    c.clip();
+    g = c.createLinearGradient(0, -h / 2, 0, h / 2);
+    g.addColorStop(0, "rgba(255,255,255,.38)");
+    g.addColorStop(0.5, "rgba(255,255,255,.05)");
+    g.addColorStop(1, "rgba(0,0,0,.2)");
+    c.fillStyle = g;
+    c.fillRect(x, -h / 2, w, h);
+    c.fillStyle = "rgba(255,255,255,.22)";
+    c.fillRect(x + 14, -h / 2, 8, h);
+    c.fillRect(x + 28, -h / 2, 3, h);
+    c.restore();
+    cardRR(c, x, -h / 2, w, h, 14);
+    c.lineWidth = 2;
+    c.strokeStyle = "rgba(255,255,255,.7)";
+    c.stroke();
+    c.restore();
+    c.textAlign = "center";
+    c.textBaseline = "middle";
+    c.save();
+    c.shadowColor = "rgba(0,0,0,.35)";
+    c.shadowBlur = 6;
+    c.shadowOffsetY = 2;
+    c.font = "800 32px " + CARD_SANS;
+    c.fillStyle = "#fff";
+    c.fillText(d.typeLabel, x + w / 2 + 12, cy + 1);
+    c.restore();
+    c.textBaseline = "alphabetic";
+  }
+
+  function cardChip(c, x, y) {
+    var g = c.createLinearGradient(x, y, x + 78, y + 58);
+    cardRR(c, x, y, 78, 58, 11);
+    g.addColorStop(0, "#f7dc8c");
+    g.addColorStop(0.5, "#d9a93d");
+    g.addColorStop(1, "#b9821f");
+    c.fillStyle = g;
+    c.fill();
+    c.strokeStyle = "rgba(70,40,0,.45)";
+    c.lineWidth = 2;
+    c.beginPath();
+    c.moveTo(x, y + 19);
+    c.lineTo(x + 78, y + 19);
+    c.moveTo(x, y + 39);
+    c.lineTo(x + 78, y + 39);
+    c.moveTo(x + 39, y);
+    c.lineTo(x + 39, y + 19);
+    c.moveTo(x + 39, y + 39);
+    c.lineTo(x + 39, y + 58);
+    c.stroke();
+    cardRR(c, x + 22, y + 19, 34, 20, 6);
+    c.stroke();
+  }
+
+  function drawCard(d) {
+    var W = 900,
+      X = 20,
+      Y = 20,
+      CW = W - 40,
+      BH = 104,
+      GAP = 14;
+    var rows = d.key ? 3 : 2;
+    var chipY = Y + 142,
+      fx = X + 28,
+      fw = CW - 56,
+      r1y = Y + 236;
+    var footY = r1y + rows * BH + (rows - 1) * GAP + 22,
+      footH = 116;
+    var CH = footY + footH + 28 - Y,
+      H = Y + CH + 20;
+    var acc = {
+      cccam: ["#38bdf8", "#4f6df5"],
+      newcamd: ["#c084fc", "#f472b6"],
+      cs378x: ["#fb923c", "#fbbf24"],
+    }[d.type] || ["#38bdf8", "#4f6df5"];
+    var cv = document.createElement("canvas");
+    cv.width = W;
+    cv.height = H;
+    var c = cv.getContext("2d"),
+      g,
+      i,
+      k;
+    c.fillStyle = "#07080c";
+    c.fillRect(0, 0, W, H);
+
+    cardRR(c, X, Y, CW, CH, 40);
+    g = c.createLinearGradient(X, Y, X + CW, Y + CH);
+    g.addColorStop(0, "#1c1f2b");
+    g.addColorStop(1, "#0c0d13");
+    c.fillStyle = g;
+    c.fill();
+    c.save();
+    cardRR(c, X, Y, CW, CH, 40);
+    c.clip();
+    function glow(px, py, r, col, a) {
+      var rg = c.createRadialGradient(px, py, 0, px, py, r);
+      rg.addColorStop(0, cardHexA(col, a));
+      rg.addColorStop(1, cardHexA(col, 0));
+      c.fillStyle = rg;
+      c.fillRect(X, Y, CW, CH);
+    }
+    glow(X + 60, Y + 30, 420, "#fbbf24", 0.13);
+    glow(X + CW - 40, Y + 40, 460, acc[0], 0.26);
+    glow(X + CW, Y + CH * 0.62, 480, "#a78bfa", 0.2);
+    glow(X, Y + CH, 460, "#2dd4bf", 0.16);
+    c.lineWidth = 1.5;
+    for (k = 0; k < 8; k++) {
+      c.beginPath();
+      for (i = 0; i <= CW; i += 6) {
+        var yy = Y + 170 + k * 16 + Math.sin(i / 90 + k * 0.5) * 12;
+        if (i === 0) c.moveTo(X + i, yy);
+        else c.lineTo(X + i, yy);
+      }
+      c.strokeStyle = "rgba(255,255,255," + (k % 2 ? 0.018 : 0.03) + ")";
+      c.stroke();
+    }
+    g = c.createLinearGradient(X, 0, X + CW, 0);
+    g.addColorStop(0, "#38bdf8");
+    g.addColorStop(0.34, "#a78bfa");
+    g.addColorStop(0.67, "#f472b6");
+    g.addColorStop(1, "#fbbf24");
+    c.fillStyle = g;
+    c.fillRect(X, Y, CW, 7);
+    c.restore();
+    cardRR(c, X, Y, CW, CH, 40);
+    c.lineWidth = 2;
+    c.strokeStyle = "rgba(255,255,255,.14)";
+    c.stroke();
+
+    cardIcon(c, "dish", X + 72, Y + 70, "#e8f1ff");
+    c.textAlign = "left";
+    c.textBaseline = "alphabetic";
+    cardFit(c, d.name, CW - 480, 48, "800", CARD_SANS, 24);
+    c.fillStyle = "#f7f9ff";
+    c.fillText(d.name, X + 120, Y + 76);
+    cardSpacing(c, 4);
+    c.font = "700 15px " + CARD_SANS;
+    c.fillStyle = "#8d97ad";
+    c.fillText("SUBSCRIPTION CARD", X + 122, Y + 106);
+    cardSpacing(c, 0);
+    cardTypeTag(c, d, acc, X + CW - 40, Y + 68);
+
+    cardChip(c, X + 40, chipY);
+    var lx = X + 150,
+      lw = X + CW - 40 - lx,
+      lh = 58;
+    var pre = d.prefix != null ? d.prefix : d.type === "cccam" ? "C:" : d.type === "newcamd" ? "N:" : "";
+    var base = d.host + " " + d.port + " " + d.user + " " + d.pass;
+    var line =
+      base + (d.key ? " " + String(d.key).replace(/\s+/g, "") : "");
+    cardRR(c, lx, chipY, lw, lh, 18);
+    c.fillStyle = "rgba(255,255,255,.05)";
+    c.fill();
+    c.lineWidth = 2;
+    c.strokeStyle = cardHexA(acc[0], 0.5);
+    c.stroke();
+    var avail = lw - 36 - (pre ? 44 : 0),
+      sz = cardFit(c, line, avail, 24, "700", CARD_MONO, 15);
+    if (c.measureText(line).width > avail) {
+      line = base;
+      cardFit(c, line, avail, 24, "700", CARD_MONO, 15);
+    }
+    c.textBaseline = "middle";
+    c.textAlign = "left";
+    var tx0 = lx + 18;
+    if (pre) {
+      c.fillStyle = acc[0];
+      c.fillText(pre, tx0, chipY + lh / 2 + 1);
+      tx0 += 44;
+    }
+    c.fillStyle = "#dfe6f5";
+    c.fillText(line, tx0, chipY + lh / 2 + 1);
+    c.textBaseline = "alphabetic";
+
+    function box(label, val, icon, col, bx, by, bw, size) {
+      cardRR(c, bx, by, bw, BH, 26);
+      c.fillStyle = "rgba(255,255,255,.04)";
+      c.fill();
+      c.lineWidth = 2;
+      c.strokeStyle = cardHexA(col, 0.55);
+      c.stroke();
+      cardRing(c, icon, bx + 52, by + BH / 2, 29, col);
+      var tx = bx + 100;
+      cardSpacing(c, 3);
+      c.font = "700 16px " + CARD_SANS;
+      c.fillStyle = col;
+      c.textAlign = "left";
+      c.fillText(label, tx, by + 38);
+      cardSpacing(c, 0);
+      cardFit(c, val, bx + bw - 24 - tx, size || 40, "700", CARD_MONO, 20);
+      c.fillStyle = "#f7f9ff";
+      c.fillText(val, tx, by + 83);
+    }
+    var wl = Math.round((fw - 14) * 0.6),
+      wr = fw - 14 - wl,
+      xr = fx + wl + 14;
+    box("HOST", d.host, "globe", "#2dd4bf", fx, r1y, wl);
+    box("PORT", d.port, "port", "#a78bfa", xr, r1y, wr);
+    box("USER", d.user, "user", "#fbbf24", fx, r1y + BH + GAP, wl);
+    box("PASSWORD", d.pass, "lock", "#fb7185", xr, r1y + BH + GAP, wr);
+    if (d.key) box("DES KEY", d.key, "key", "#fb923c", fx, r1y + (BH + GAP) * 2, fw, 36);
+
+    var pal = {
+      ok: ["#0f9d58", "#34d399"],
+      soon: ["#c2570c", "#fbbf24"],
+      expired: ["#991b1b", "#f43f5e"],
+      none: ["#6d28d9", "#d946ef"],
+    }[d.exp.kind];
+    cardRR(c, fx, footY, fw, footH, 32);
+    g = c.createLinearGradient(fx, footY, fx + fw, footY + footH);
+    g.addColorStop(0, pal[0]);
+    g.addColorStop(1, pal[1]);
+    c.save();
+    c.shadowColor = cardHexA(pal[1], 0.45);
+    c.shadowBlur = 24;
+    c.fillStyle = g;
+    c.fill();
+    c.restore();
+    c.save();
+    cardRR(c, fx, footY, fw, footH, 32);
+    c.clip();
+    g = c.createLinearGradient(0, footY, 0, footY + footH * 0.5);
+    g.addColorStop(0, "rgba(255,255,255,.28)");
+    g.addColorStop(1, "rgba(255,255,255,0)");
+    c.fillStyle = g;
+    c.fillRect(fx, footY, fw, footH * 0.5);
+    c.fillStyle = "rgba(255,255,255,.14)";
+    for (i = 0; i < 2; i++) {
+      var sx = fx + fw - 120 + i * 34;
+      c.beginPath();
+      c.moveTo(sx + 40, footY);
+      c.lineTo(sx + 72, footY);
+      c.lineTo(sx + 32, footY + footH);
+      c.lineTo(sx, footY + footH);
+      c.closePath();
+      c.fill();
+    }
+    c.restore();
+    cardRR(c, fx, footY, fw, footH, 32);
+    c.lineWidth = 2;
+    c.strokeStyle = "rgba(255,255,255,.4)";
+    c.stroke();
+    var icx = fx + 66,
+      icy = footY + footH / 2;
+    c.beginPath();
+    c.arc(icx, icy, 38, 0, Math.PI * 2);
+    c.fillStyle = "rgba(255,255,255,.2)";
+    c.fill();
+    c.lineWidth = 2.5;
+    c.strokeStyle = "rgba(255,255,255,.85)";
+    c.stroke();
+    cardIcon(c, d.exp.kind === "none" ? "inf" : "cal", icx, icy, "#fff");
+    c.fillStyle = "rgba(255,255,255,.45)";
+    c.fillRect(fx + 128, footY + 24, 3, footH - 48);
+    c.textAlign = "left";
+    cardSpacing(c, 5);
+    c.font = "700 18px " + CARD_SANS;
+    c.fillStyle = "rgba(255,255,255,.92)";
+    c.fillText(
+      d.exp.kind === "expired" ? "EXPIRED ON" : d.exp.kind === "none" ? "VALIDITY" : "VALID UNTIL",
+      fx + 152,
+      footY + 34,
+    );
+    cardSpacing(c, 0);
+    var fam = d.exp.kind === "none" ? CARD_SANS : CARD_MONO;
+    cardFit(c, d.exp.date, fw - 152 - 150, 54, "800", fam, 30);
+    c.fillStyle = "#fff";
+    c.fillText(d.exp.date, fx + 152, footY + 92);
+    return cv;
+  }
+
+  function closeCard() {
+    var o = document.getElementById("cardMo");
+    if (!o) return;
+    if (o._url) URL.revokeObjectURL(o._url);
+    o.parentNode.removeChild(o);
+    document.removeEventListener("keydown", cardEsc);
+  }
+  function cardEsc(e) {
+    if (e.key === "Escape") closeCard();
+  }
+
+  function showCard(cv, user, title) {
+    closeCard();
+    cv.toBlob(function (blob) {
+      if (!blob) {
+        oscToast("Could not create the card image", "err");
+        return;
+      }
+      var fname = (user.replace(/[^\w.-]+/g, "_") || "user") + "-subscription.png";
+      var file = null;
+      try {
+        file = new File([blob], fname, { type: "image/png" });
+      } catch (e) {}
+      var o = document.createElement("div");
+      o.id = "cardMo";
+      o.className = "cardmo";
+      o.setAttribute("role", "dialog");
+      o.setAttribute("aria-modal", "true");
+      o._url = URL.createObjectURL(blob);
+      var box = document.createElement("div");
+      box.className = "cardmo-box";
+      var img = document.createElement("img");
+      img.className = "cardmo-img";
+      img.alt = "Subscription card";
+      img.src = o._url;
+      var bar = document.createElement("div");
+      bar.className = "cardmo-act";
+      function mk(txt, cls, fn) {
+        var b = document.createElement("button");
+        b.type = "button";
+        b.className = "oscbtn " + cls;
+        b.textContent = txt;
+        b.addEventListener("click", fn);
+        bar.appendChild(b);
+        return b;
+      }
+      var canShare = !!(
+        file &&
+        navigator.canShare &&
+        navigator.share &&
+        navigator.canShare({ files: [file] })
+      );
+      if (canShare) {
+        mk("Share", "pri", function () {
+          navigator.share({ files: [file], title: title }).catch(function () {});
+        });
+      }
+      mk("Save PNG", canShare ? "" : "pri", function () {
+        var a = document.createElement("a");
+        a.href = o._url;
+        a.download = fname;
+        document.body.appendChild(a);
+        a.click();
+        a.parentNode.removeChild(a);
+      });
+      mk("Close", "", closeCard);
+      box.appendChild(img);
+      box.appendChild(bar);
+      o.appendChild(box);
+      o.addEventListener("click", function (e) {
+        if (e.target === o) closeCard();
+      });
+      document.body.appendChild(o);
+      document.addEventListener("keydown", cardEsc);
+    }, "image/png");
+  }
+
+
+  function oscSeller() {
+    var s = window.OSC_SELLER || {};
+    var ports = s.ports || {};
+    var type = CARD_TYPES[s.type] ? s.type : "cccam";
+    return {
+      name: s.name || "",
+      type: type,
+      host: s.host || location.hostname || "-",
+      port: type === "custom" ? (s.customPort > 0 ? String(s.customPort) : "-") : ports[type] > 0 ? String(ports[type]) : "-",
+      key: s.key || "",
+      label: type === "custom" ? s.label || "Custom" : CARD_TYPES[type],
+      prefix: type === "custom" ? s.prefix || "" : null,
+    };
+  }
+
+  function openCard(u) {
+    fetch("user_edit.html?user=" + encodeURIComponent(u), { credentials: "same-origin", cache: "no-store" })
+      .then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.text();
+      })
+      .then(function (html) {
+        var doc = new DOMParser().parseFromString(html, "text/html");
+        var pw = doc.querySelector('input[name="pwd"]');
+        var ex = doc.querySelector('input[name="expdate"]');
+        var sel = oscSeller();
+        var name = sel.name || "My Service";
+        if (!sel.name) oscToast("Tip: set the provider name in Configuration > Webif > Seller", "ok");
+        showCard(
+          drawCard({
+            name: name,
+            type: sel.type,
+            typeLabel: sel.label,
+            prefix: sel.prefix,
+            host: sel.host,
+            port: sel.port,
+            user: u,
+            pass: pw ? pw.value : "",
+            key: sel.key,
+            exp: cardExpiry(ex ? ex.value.trim() : ""),
+          }),
+          u,
+          name
+        );
+      })
+      .catch(function (e) {
+        oscToast("Could not load the user: " + (e && e.message ? e.message : e), "err");
+      });
+  }
+
+  document.addEventListener("click", function (e) {
+    var a = e.target.closest ? e.target.closest("a.cardbtn") : null;
+    if (!a) return;
+    e.preventDefault();
+    openCard(a.getAttribute("data-user"));
+  });
+
+  /* ---- country flags (browser-side GeoIP, no server dependency) ---- */
+  var ccCache = {}, ccWaiters = {};
+
+  function isPublicIPv4(ip) {
+    var m = String(ip).match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    if (!m) return false;
+    var a = m.slice(1).map(Number);
+    if (a.some(function (n) { return n < 0 || n > 255; })) return false;
+    if (a[0] === 10 || a[0] === 127 || a[0] === 0 || a[0] >= 224) return false;
+    if (a[0] === 192 && a[1] === 168) return false;
+    if (a[0] === 172 && a[1] >= 16 && a[1] <= 31) return false;
+    if (a[0] === 169 && a[1] === 254) return false;
+    return true;
+  }
+
+  function countryFlag(cc) {
+    cc = String(cc || "").toUpperCase();
+    if (!/^[A-Z]{2}$/.test(cc)) return "";
+    return String.fromCodePoint(cc.charCodeAt(0) + 127397, cc.charCodeAt(1) + 127397);
+  }
+
+  function geoProviders(ip) {
+    var q = encodeURIComponent(ip);
+    return [
+      { url: "https://ipwho.is/" + q,
+        parse: function (d) { return d && d.success !== false && d.country_code ? { code: d.country_code, country: d.country } : null; } },
+      { url: "https://ipapi.co/" + q + "/json/",
+        parse: function (d) { return d && !d.error && d.country_code ? { code: d.country_code, country: d.country_name } : null; } },
+      { url: "https://geolocation-db.com/json/" + q,
+        parse: function (d) { return d && d.country_code && d.country_code !== "Not found" ? { code: d.country_code, country: d.country_name } : null; } }
+    ];
+  }
+
+  function fetchJsonTimeout(url, ms) {
+    var ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+    var t = ctrl ? setTimeout(function () { ctrl.abort(); }, ms) : null;
+    return fetch(url, { cache: "force-cache", signal: ctrl ? ctrl.signal : undefined })
+      .then(function (r) { if (t) clearTimeout(t); return r.ok ? r.json() : null; })
+      .catch(function () { if (t) clearTimeout(t); return null; });
+  }
+
+  function geoTry(providers, i) {
+    if (i >= providers.length) return Promise.resolve(null);
+    return fetchJsonTimeout(providers[i].url, 4000).then(function (d) {
+      var r = d ? providers[i].parse(d) : null;
+      return r || geoTry(providers, i + 1);
+    });
+  }
+
+  function flagImgHtml(code) {
+    var cc = String(code || "").toLowerCase();
+    if (!/^[a-z]{2}$/.test(cc)) return "";
+    return '<img src="https://flagcdn.com/w40/' + cc + '.png" srcset="https://flagcdn.com/w80/' + cc +
+      '.png 2x" width="16" height="12" alt="" loading="lazy" style="vertical-align:middle;border-radius:2px;display:inline-block">';
+  }
+
+  function paintFlag(el, c) {
+    var img = flagImgHtml(c.code), name = c.country || c.code || "";
+    if (img) el.innerHTML = img; else el.textContent = c.flag || c.code || "";
+    el.title = name;
+    var im = el.firstChild;
+    if (im && im.tagName === "IMG") { im.title = name; im.alt = name; }
+    if (el.parentNode) el.parentNode.title = name;
+  }
+
+  function loadCountry(ip, el) {
+    if (!isPublicIPv4(ip)) return;
+    if (Object.prototype.hasOwnProperty.call(ccCache, ip)) {
+      if (ccCache[ip].code) paintFlag(el, ccCache[ip]);
+      else if (ccCache[ip].pending) ccWaiters[ip].push(el);
+      return;
+    }
+    ccCache[ip] = { pending: true };
+    ccWaiters[ip] = [el];
+    geoTry(geoProviders(ip), 0).then(function (r) {
+      var waiters = ccWaiters[ip] || [];
+      delete ccWaiters[ip];
+      if (!r) { delete ccCache[ip]; return; }
+      ccCache[ip] = { code: r.code, country: r.country || r.code, flag: countryFlag(r.code) };
+      waiters.forEach(function (w) { paintFlag(w, ccCache[ip]); });
+    }).catch(function () { delete ccCache[ip]; delete ccWaiters[ip]; });
+  }
+
+  var IP_RE = /(\d{1,3}(?:\.\d{1,3}){3})/;
+
+  function findFlag(td) {
+    for (var k = 0; k < td.childNodes.length; k++) {
+      var n = td.childNodes[k];
+      if (n.nodeType === 1 && n.className === "oscflag") return n;
+    }
+    return null;
+  }
+
+  function paintCell(td, ip) {
+    var cur = findFlag(td);
+    if (cur && cur.getAttribute("data-ip") === ip) return;
+    if (cur) td.removeChild(cur);
+    if (!ip || !isPublicIPv4(ip)) return;
+    var sp = document.createElement("span");
+    sp.className = "oscflag";
+    sp.setAttribute("data-ip", ip);
+    td.insertBefore(sp, td.firstChild);
+    loadCountry(ip, sp);
+  }
+
+  function flagCells() {
+    var i, td, m, tgt, cells;
+    // Status + Users pages: the flag has its own column right after the Address column
+    cells = document.querySelectorAll("td.usercol2, td.statuscol7, td.failbanip");
+    for (i = 0; i < cells.length; i++) {
+      td = cells[i];
+      tgt = td.parentNode.querySelector(td.className.indexOf("usercol2") === 0 ? "td.usercol2b" : td.className.indexOf("failbanip") === 0 ? "td.failbanflag" : "td.statuscol7b");
+      if (!tgt) continue;
+      m = IP_RE.exec((td.textContent || "").trim());
+      paintCell(tgt, m ? m[1] : "");
+    }
+  }
+
+  function init() {
+    oscCss();
+    flagCells();
+    setInterval(flagCells, 2500);
+  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
+  else init();
+})();

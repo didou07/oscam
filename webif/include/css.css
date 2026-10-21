@@ -279,6 +279,15 @@ td.usercol0 a:hover img.icon {
 	background-color:#F00
 }
 
+/* Country flag column (next to Address) */
+td.statuscol7b, td.usercol2b, td.failbanflag {
+	text-align:center;
+	width:30px
+}
+td.statuscol7b .oscflag, td.usercol2b .oscflag, td.failbanflag .oscflag {
+	margin:0
+}
+
 /* ------- USERS ------- */
 /* userconfig.html */
 table.users {
