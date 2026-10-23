@@ -1296,3 +1296,170 @@ a.wiki-active {
 	position:relative;
 	z-index:2
 }
+div.schedstate {
+	margin:5px 0;
+	font-size:12px
+}
+div.schedstate img.icon {
+	vertical-align:middle;
+	margin-right:4px
+}
+a.schedon img.icon {
+	background-color:#0A0
+}
+a.schedon:hover img.icon {
+	background-color:#F00
+}
+table.schedtable td {
+	padding:3px 5px
+}
+table.schedtable td.schedbtn {
+	width:1%;
+	white-space:nowrap;
+	text-align:center
+}
+table.schedtable td.schedbtn a {
+	margin:0 2px
+}
+td.schedok {
+	color:#080;
+	font-weight:700
+}
+td.schedfail {
+	color:#C00;
+	font-weight:700
+}
+table.sched {
+	width:100%;
+	max-width:700px;
+	white-space:normal
+}
+table.sched td {
+	padding:2px 5px;
+	text-align:left
+}
+table.sched td:first-child {
+	width:70px;
+	white-space:nowrap
+}
+table.sched td.configcolsave {
+	text-align:center
+}
+table.sched label {
+	margin-right:8px;
+	white-space:nowrap
+}
+table.sched input.a-text {
+	width:200px
+}
+table.sched input.a-par {
+	width:150px
+}
+table.sched a.actdel img.icon {
+	vertical-align:middle;
+	margin-left:3px
+}
+table.sched input[type=button] {
+	width:70px
+}
+tr.schedhide {
+	display:none
+}
+span.schedhint {
+	font-weight:400
+}
+td.schedhelp {
+	font-size:11px;
+	color:#555
+}
+textarea.schedraw {
+	width:100%;
+	font-family:monospace;
+	font-size:12px;
+	white-space:pre
+}
+table.schedtable th:nth-child(2) { width:22% }
+table.schedtable th:nth-child(3) { width:20% }
+table.schedtable th:nth-child(5), table.schedtable th:nth-child(6) { width:15% }
+td.schedsum {
+	font-style:italic;
+	padding:6px 8px
+}
+td.schedquick {
+	font-size:11px
+}
+a.schedcopy {
+	font-size:10px;
+	margin-left:6px
+}
+td.schedbtn a.schedcopy {
+	vertical-align:middle;
+	margin-left:6px;
+	font-size:11px
+}
+table.sched input.schedcopybtn {
+	width:100px !important
+}
+div.schedstate {
+	text-align:center;
+	font-size:14px;
+	margin:10px 0
+}
+table.schedtable, table.sched {
+	margin-left:auto;
+	margin-right:auto;
+	font-family:Arial, Helvetica, sans-serif;
+	font-size:13px;
+	line-height:1.4
+}
+table.schedtable th, table.sched th {
+	font-size:13px;
+	text-align:center
+}
+table.schedtable td, table.sched td, table.sched td:first-child {
+	text-align:center;
+	vertical-align:middle
+}
+table.sched td:first-child {
+	width:90px;
+	font-weight:700
+}
+table.sched select, table.sched input, table.sched textarea {
+	font-family:Arial, Helvetica, sans-serif;
+	font-size:13px
+}
+table.sched select {
+	height:24px
+}
+table.sched input[type=text] {
+	height:20px;
+	text-align:center
+}
+table.sched input.a-text, table.sched input.a-par, table.sched input.longer, table.sched input.medium {
+	text-align:left
+}
+table.sched td.schedhelp {
+	font-size:12px;
+	color:#444;
+	text-align:center
+}
+td.schedsum {
+	font-size:14px;
+	font-style:normal;
+	font-weight:700;
+	color:#036;
+	padding:8px 10px
+}
+td.schedquick {
+	font-size:12px
+}
+span.schedhint {
+	font-size:12px
+}
+textarea.schedraw {
+	display:block;
+	margin:0 auto;
+	font-family:"Courier New", monospace;
+	font-size:13px;
+	text-align:left
+}

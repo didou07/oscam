@@ -16,6 +16,7 @@
 #include "module-newcamd.h"
 #include "module-stat.h"
 #include "module-webif.h"
+#include "module-sched.h"
 #include "module-webif-lib.h"
 #include "module-webif-tpl.h"
 #include "oscam-conf-mk.h"
@@ -146,7 +147,8 @@ static void tpl_add_group_limit_vars(struct templatevars *vars)
 #define MNU_CACHEEX          8
 #define MNU_SCRIPT           9
 #define MNU_SHUTDOWN        10
-#define MNU_TOTAL_ITEMS     11 // sum of items above
+#define MNU_SCHEDULER       11
+#define MNU_TOTAL_ITEMS     12 // sum of items above
 
 /* constants for config.html submenuactivating */
 #define MNU_CFG_GLOBAL       0
@@ -7842,6 +7844,873 @@ static char *send_oscam_files(struct templatevars * vars, struct uriparams * par
 		{ return tpl_getTpl(vars, "APIFILE"); }
 }
 
+// Runs one scheduler action inside OSCam. Returns 0 on success, else fills msg.
+int32_t sched_exec_action(const char *act, const char *arg, char *msg, size_t msglen)
+{
+	char target[128];
+	int32_t rc = 0, all;
+	struct s_reader *rdr;
+	struct s_auth *account;
+	LL_ITER itr;
+
+	cs_strncpy(target, arg ? arg : "", sizeof(target));
+	trim(target);
+	all = !strcmp(target, "*");
+	msg[0] = '\0';
+
+	// these must not run while holding http_lock (they shut the WebIF down)
+	if(!strcmp(act, "system.restart")) { cs_log("Restart requested by scheduler"); cs_restart_oscam(); return 0; }
+	if(!strcmp(act, "system.shutdown")) { cs_log("Shutdown requested by scheduler"); cs_exit_oscam(); return 0; }
+
+	cs_writelock(__func__, &http_lock);
+
+	if(!strncmp(act, "reader.", 7))
+	{
+		int8_t found = 0, changed = 0;
+		const char *what = act + 7;
+		if(!*target) { snprintf(msg, msglen, "no reader selected"); rc = -1; goto done; }
+
+		itr = ll_iter_create(configured_readers);
+		while((rdr = ll_iter_next(&itr)))
+		{
+			if(!all && strcmp(rdr->label, target)) { continue; }
+			found = 1;
+			if(!strcmp(what, "restart"))
+			{
+				if(rdr->typ != R_GBOX)
+				{
+					if(rdr->client) { add_job(rdr->client, ACTION_READER_RESTART, NULL, 0); }
+				}
+#ifdef MODULE_GBOX
+				else { restart_gbox_peer(rdr->label, 0, 0); }
+#endif
+				cs_log("Reader %s restarted by scheduler", rdr->label);
+			}
+			else if(!strcmp(what, "enable") || !strcmp(what, "disable"))
+			{
+				int8_t want = !strcmp(what, "enable") ? 1 : 0;
+				if(rdr->enable == want) { continue; }
+				rdr->enable = want;
+				if(rdr->typ != R_GBOX) { restart_cardreader(rdr, 1); }
+#ifdef MODULE_GBOX
+				else { restart_gbox_peer(rdr->label, 0, 0); }
+#endif
+				cs_log("reader %s %s by scheduler", rdr->label, want ? "enabled" : "disabled");
+				changed = 1;
+			}
+			else { snprintf(msg, msglen, "unknown action '%s'", act); rc = -1; goto done; }
+		}
+		if(!found) { snprintf(msg, msglen, "reader '%s' not found", target); rc = -1; goto done; }
+		if(changed && write_server() != 0) { snprintf(msg, msglen, "reader changed, but oscam.server could not be written"); rc = -1; }
+		goto done;
+	}
+
+	if(!strncmp(act, "user.", 5))
+	{
+		const char *what = act + 5;
+		if(!*target) { snprintf(msg, msglen, "no user selected"); rc = -1; goto done; }
+		if(!strcmp(what, "resetstats") && all) { clear_all_account_stats(); goto done; }
+		if(all && strcmp(what, "kick")) { snprintf(msg, msglen, "'*' is not allowed for this action"); rc = -1; goto done; }
+
+		if(all) // kick everybody
+		{
+			for(account = cfg.account; account; account = account->next) { kill_account_thread(account); }
+			goto done;
+		}
+		account = get_account_by_name(target);
+		if(!account) { snprintf(msg, msglen, "user '%s' not found", target); rc = -1; goto done; }
+
+		if(!strcmp(what, "enable") || !strcmp(what, "disable"))
+		{
+			if(!strcmp(what, "disable")) { account->disabled = 1; kill_account_thread(account); }
+			else { account->disabled = 0; }
+			cs_log("user %s %s by scheduler", account->usr, account->disabled ? "disabled" : "enabled");
+			if(write_userdb() != 0) { snprintf(msg, msglen, "user changed, but oscam.user could not be written"); rc = -1; }
+		}
+		else if(!strcmp(what, "kick")) { kill_account_thread(account); }
+		else if(!strcmp(what, "resetstats")) { clear_account_stats(account); }
+		else { snprintf(msg, msglen, "unknown action '%s'", act); rc = -1; }
+		goto done;
+	}
+
+	if(!strcmp(act, "system.reload_users")) { cs_log("Refresh Accounts requested by scheduler"); cs_accounts_chk(); goto done; }
+	if(!strcmp(act, "system.reload_readers")) { cs_log("Refresh Readers requested by scheduler"); reload_readerdb(); goto done; }
+	if(!strcmp(act, "system.reload_services")) { cs_log("Refresh Services requested by scheduler"); cs_accounts_chk(); goto done; }
+
+	if(!strcmp(act, "stats.reset_users")) { clear_all_account_stats(); goto done; }
+	if(!strcmp(act, "stats.reset_clients")) { clear_info_clients_stats(); goto done; }
+	if(!strcmp(act, "stats.reset_readers")) { clear_info_readers_stats(); goto done; }
+	if(!strcmp(act, "stats.reset_cacheex"))
+	{
+#ifdef CS_CACHEEX
+		cacheex_clear_all_stats();
+#else
+		snprintf(msg, msglen, "CacheEX is not built into this OSCam");
+		rc = -1;
+#endif
+		goto done;
+	}
+	if(!strcmp(act, "cache.clean")) { cleanup_cache(true); goto done; }
+	if(!strcmp(act, "failban.clear"))
+	{
+		if(cfg.v_list)
+		{
+			LL_ITER vitr = ll_iter_create(cfg.v_list);
+			while(ll_iter_next(&vitr)) { ll_iter_remove_data(&vitr); }
+		}
+		goto done;
+	}
+	snprintf(msg, msglen, "unknown action '%s'", act);
+	rc = -1;
+
+done:
+	cs_writeunlock(__func__, &http_lock);
+	return rc;
+}
+
+
+// Scheduler page (scheduler.html): form <-> job conversion and template variables.
+
+struct sched_names { char **v; int n; int cap; };
+
+static void sched_names_add(struct sched_names *s, const char *x)
+{
+	if(!x || !*x) return;
+	if(s->n == s->cap)
+	{
+		int nc = s->cap ? s->cap * 2 : 16;
+		char **nv = realloc(s->v, nc * sizeof(char *));
+		if(!nv) return;
+		s->v = nv; s->cap = nc;
+	}
+	s->v[s->n] = strdup(x);
+	if(s->v[s->n]) s->n++;
+}
+
+static void sched_names_free(struct sched_names *s)
+{
+	int i;
+	for(i = 0; i < s->n; i++) free(s->v[i]);
+	free(s->v);
+	memset(s, 0, sizeof(*s));
+}
+
+static int sched_safe_script_name(const char *name)
+{
+	const unsigned char *p;
+	size_t n = name ? strlen(name) : 0;
+	if(!n || name[0] == '.' || strstr(name, "..")) return 0;
+	if(!((n > 7 && strcmp(name + n - 7, ".script") == 0) || (n > 3 && strcmp(name + n - 3, ".sh") == 0))) return 0;
+	for(p = (const unsigned char *)name; *p; p++)
+		if(!(isalnum(*p) || *p == '_' || *p == '-' || *p == '.')) return 0;
+	return 1;
+}
+
+/* The values of the form, as the user sees them */
+#define SCH_PAR_LEN 128
+typedef struct
+{
+	uint32_t id;                         /* 0 = new task */
+	char     name[SCHED_NAME_LEN];
+	int      enabled;
+	int      stype;
+	int      every_n;  char every_u;     /* s m h d */
+	char     times[64];                  /* "03:00, 15:30" */
+	char     date[16];                   /* YYYY-MM-DD */
+	unsigned wdays;                      /* bit0 = Sunday */
+	int      mday;
+	int      delay_n;  char delay_u;     /* s m h */
+	int      nsteps;
+	struct { char act[SCHED_ACT_LEN]; char arg[SCHED_ARG_LEN]; char par[SCH_PAR_LEN]; } step[SCHED_MAX_STEPS];
+} sched_ui_t;
+
+static void sched_ui_defaults(sched_ui_t *u)
+{
+	memset(u, 0, sizeof(*u));
+	u->enabled = 1;
+	u->stype = SCHED_DAILY;
+	u->every_n = 15; u->every_u = 'm';
+	cs_strncpy(u->times, "03:00", sizeof(u->times));
+	u->wdays = 1u << 1;
+	u->mday = 1;
+	u->delay_n = 30; u->delay_u = 's';
+}
+
+static void sched_ui_from_job(sched_ui_t *u, const sched_job_t *j)
+{
+	int i;
+	size_t o = 0;
+	struct tm tmv;
+
+	sched_ui_defaults(u);
+	u->id = j->id;
+	cs_strncpy(u->name, j->name, sizeof(u->name));
+	u->enabled = j->enabled;
+	u->stype = j->stype;
+	if(j->every_sec > 0)
+	{
+		int s = j->every_sec;
+		if(s % 86400 == 0) { u->every_n = s / 86400; u->every_u = 'd'; }
+		else if(s % 3600 == 0) { u->every_n = s / 3600; u->every_u = 'h'; }
+		else if(s % 60 == 0) { u->every_n = s / 60; u->every_u = 'm'; }
+		else { u->every_n = s; u->every_u = 's'; }
+	}
+	if(j->ntimes > 0) u->times[0] = '\0';
+	for(i = 0; i < j->ntimes && o + 8 < sizeof(u->times); i++)
+		o += (size_t)snprintf(u->times + o, sizeof(u->times) - o, "%s%02d:%02d", i ? ", " : "", j->times[i] / 60, j->times[i] % 60);
+	if(j->stype == SCHED_ONCE && j->once)
+	{
+		localtime_r(&j->once, &tmv);
+		strftime(u->date, sizeof(u->date), "%Y-%m-%d", &tmv);
+		strftime(u->times, sizeof(u->times), "%H:%M", &tmv);
+	}
+	if(j->wdays) u->wdays = j->wdays;
+	if(j->mday >= 1 && j->mday <= 31) u->mday = j->mday;
+	if(j->delay_sec >= 3600 && j->delay_sec % 3600 == 0) { u->delay_n = j->delay_sec / 3600; u->delay_u = 'h'; }
+	else if(j->delay_sec >= 60 && j->delay_sec % 60 == 0) { u->delay_n = j->delay_sec / 60; u->delay_u = 'm'; }
+	else { u->delay_n = j->delay_sec; u->delay_u = 's'; }
+	for(i = 0; i < j->nsteps && i < SCHED_MAX_STEPS; i++)
+	{
+		const char *arg = j->steps[i].arg, *sp;
+		cs_strncpy(u->step[i].act, j->steps[i].act, SCHED_ACT_LEN);
+		if(strcmp(j->steps[i].act, "script.run") == 0 && (sp = strchr(arg, ' ')))
+		{
+			size_t n = (size_t)(sp - arg);
+			if(n >= SCHED_ARG_LEN) n = SCHED_ARG_LEN - 1;
+			memcpy(u->step[i].arg, arg, n);
+			u->step[i].arg[n] = '\0';
+			while(*sp == ' ') sp++;
+			cs_strncpy(u->step[i].par, sp, SCH_PAR_LEN);
+		}
+		else cs_strncpy(u->step[i].arg, arg, SCHED_ARG_LEN);
+	}
+	u->nsteps = j->nsteps;
+}
+
+static char sched_unit(const char *v, const char *allowed, char def)
+{
+	return (v[0] && strchr(allowed, v[0])) ? v[0] : def;
+}
+
+static void sched_ui_from_form(sched_ui_t *u, struct uriparams *params)
+{
+	static const char *types[] = { "every", "daily", "weekly", "monthly", "once", "startup" };
+	char key[16];
+	const char *v;
+	int i, n = 0;
+
+	sched_ui_defaults(u);
+	u->id = (uint32_t)strtoul(getParam(params, "id"), NULL, 10);
+	cs_strncpy(u->name, getParam(params, "name"), sizeof(u->name));
+	trim(u->name);
+	u->enabled = (getParam(params, "enabled")[0] == '1');
+	u->stype = -1;
+	v = getParam(params, "stype");
+	for(i = 0; i < 6; i++) if(strcmp(v, types[i]) == 0) u->stype = i;
+	u->every_n = atoi(getParam(params, "ivalue"));
+	u->every_u = sched_unit(getParam(params, "iunit"), "smhd", 'm');
+	cs_strncpy(u->times, getParam(params, "time"), sizeof(u->times));
+	cs_strncpy(u->date, getParam(params, "date"), sizeof(u->date));
+	u->wdays = 0;
+	for(i = 0; i < 7; i++)
+	{
+		snprintf(key, sizeof(key), "d%d", i);
+		if(getParam(params, key)[0] == '1') u->wdays |= 1u << i;
+	}
+	u->mday = atoi(getParam(params, "mday"));
+	u->delay_n = atoi(getParam(params, "delay"));
+	u->delay_u = sched_unit(getParam(params, "dunit"), "smh", 's');
+
+	for(i = 1; i <= SCHED_MAX_STEPS; i++)
+	{
+		snprintf(key, sizeof(key), "act%d", i);
+		v = getParam(params, key);
+		if(!v[0]) continue;
+		cs_strncpy(u->step[n].act, v, SCHED_ACT_LEN);
+		snprintf(key, sizeof(key), "arg%d", i);
+		cs_strncpy(u->step[n].arg, getParam(params, key), SCHED_ARG_LEN);
+		trim(u->step[n].arg);
+		snprintf(key, sizeof(key), "par%d", i);
+		cs_strncpy(u->step[n].par, getParam(params, key), SCH_PAR_LEN);
+		trim(u->step[n].par);
+		n++;
+	}
+	u->nsteps = n;
+}
+
+/* "03:00, 15:30" -> minutes since midnight.  Returns the count, or -1. */
+static int sched_parse_times(const char *s, int16_t *out, int max)
+{
+	char buf[64], *p, *save = NULL;
+	int n = 0;
+	cs_strncpy(buf, s, sizeof(buf));
+	for(p = strtok_r(buf, ", ", &save); p; p = strtok_r(NULL, ", ", &save))
+	{
+		int h, m, used = 0;
+		if(sscanf(p, "%d:%d%n", &h, &m, &used) != 2 || p[used] || h < 0 || h > 23 || m < 0 || m > 59 || n >= max) return -1;
+		out[n++] = (int16_t)(h * 60 + m);
+	}
+	return n > 0 ? n : -1;
+}
+
+static int sched_has_ctl(const char *s)
+{
+	for(; *s; s++) if((unsigned char)*s < 32) return 1;
+	return 0;
+}
+
+/* Check the form and build the job.  Returns 0, or -1 with err set. */
+static int sched_ui_to_job(const sched_ui_t *u, sched_job_t *j, char *err, size_t errlen)
+{
+	long mult;
+	int i;
+
+	memset(j, 0, sizeof(*j));
+	if(sched_has_ctl(u->name)) { snprintf(err, errlen, "Enter a task name."); return -1; }
+	cs_strncpy(j->name, u->name, SCHED_NAME_LEN);
+	if(!j->name[0] && u->nsteps > 0)
+	{
+		/* no name given: use the first action, e.g. "Restart reader sky1" */
+		const sched_actdef_t *d0 = sched_actdef_find(u->step[0].act);
+		if(d0) snprintf(j->name, SCHED_NAME_LEN, "%s%s%.30s", d0->label, u->step[0].arg[0] && d0->kind != SCHED_ARG_NUM && d0->kind != SCHED_ARG_TEXT ? " " : "", d0->kind != SCHED_ARG_NUM && d0->kind != SCHED_ARG_TEXT && strcmp(u->step[0].arg, "*") ? u->step[0].arg : "");
+	}
+	if(!j->name[0]) { snprintf(err, errlen, "Enter a task name."); return -1; }
+	j->enabled = u->enabled ? 1 : 0;
+	j->stype = (int8_t)u->stype;
+
+	switch(u->stype)
+	{
+	case SCHED_EVERY:
+		mult = u->every_u == 'd' ? 86400 : u->every_u == 'h' ? 3600 : u->every_u == 'm' ? 60 : 1;
+		if(u->every_n < 1 || (long)u->every_n * mult > 31536000L) { snprintf(err, errlen, "The interval must be between 1 second and 1 year."); return -1; }
+		j->every_sec = (int32_t)(u->every_n * mult);
+		break;
+	case SCHED_DAILY:
+	case SCHED_WEEKLY:
+	case SCHED_MONTHLY:
+		i = sched_parse_times(u->times, j->times, SCHED_MAX_TIMES);
+		if(i < 0) { snprintf(err, errlen, "Enter the time as HH:MM (several allowed, e.g. 03:00, 15:30)."); return -1; }
+		j->ntimes = (int8_t)i;
+		if(u->stype == SCHED_WEEKLY)
+		{
+			if(!u->wdays) { snprintf(err, errlen, "Select at least one day."); return -1; }
+			j->wdays = (uint8_t)u->wdays;
+		}
+		if(u->stype == SCHED_MONTHLY)
+		{
+			if(u->mday < 1 || u->mday > 31) { snprintf(err, errlen, "The day of the month must be 1 to 31."); return -1; }
+			j->mday = (int8_t)u->mday;
+		}
+		break;
+	case SCHED_ONCE:
+	{
+		struct tm tmv, chk;
+		int16_t t[1];
+		int y, mo, d, used = 0;
+		if(sched_parse_times(u->times, t, 1) != 1) { snprintf(err, errlen, "Enter the time as HH:MM."); return -1; }
+		if(sscanf(u->date, "%d-%d-%d%n", &y, &mo, &d, &used) != 3 || u->date[used]) { snprintf(err, errlen, "Enter the date as YYYY-MM-DD."); return -1; }
+		memset(&tmv, 0, sizeof(tmv));
+		tmv.tm_year = y - 1900; tmv.tm_mon = mo - 1; tmv.tm_mday = d;
+		tmv.tm_hour = t[0] / 60; tmv.tm_min = t[0] % 60; tmv.tm_isdst = -1;
+		chk = tmv;
+		j->once = mktime(&chk);
+		if(y < 1970 || j->once == (time_t)-1 || chk.tm_mday != d || chk.tm_mon != mo - 1) { snprintf(err, errlen, "That date does not exist."); return -1; }
+		break;
+	}
+	case SCHED_STARTUP:
+		mult = u->delay_u == 'h' ? 3600 : u->delay_u == 'm' ? 60 : 1;
+		if(u->delay_n < 0 || (long)u->delay_n * mult > 31536000L) { snprintf(err, errlen, "Enter a valid delay (up to 1 year)."); return -1; }
+		j->delay_sec = (int32_t)(u->delay_n * mult);
+		break;
+	default:
+		snprintf(err, errlen, "Choose when the task should run.");
+		return -1;
+	}
+
+	if(u->nsteps < 1) { snprintf(err, errlen, "Add at least one action."); return -1; }
+	for(i = 0; i < u->nsteps; i++)
+	{
+		const sched_actdef_t *d = sched_actdef_find(u->step[i].act);
+		const char *arg = u->step[i].arg, *par = u->step[i].par;
+		sched_step_t *s = &j->steps[i];
+		if(!d) { snprintf(err, errlen, "Action %d: unknown action.", i + 1); return -1; }
+		if(sched_has_ctl(arg) || sched_has_ctl(par)) { snprintf(err, errlen, "Action %d contains invalid characters.", i + 1); return -1; }
+		cs_strncpy(s->act, d->act, SCHED_ACT_LEN);
+		if((!strcmp(d->act, "system.restart") || !strcmp(d->act, "system.shutdown")) && i != u->nsteps - 1)
+		{ snprintf(err, errlen, "%s must be the last action.", d->label); return -1; }
+
+		switch(d->kind)
+		{
+		case SCHED_ARG_READER:
+		case SCHED_ARG_USER:
+		case SCHED_ARG_USERALL:
+			if(!arg[0] || (d->kind == SCHED_ARG_USER && !strcmp(arg, "*")))
+			{ snprintf(err, errlen, "Action %d: select a %s.", i + 1, d->kind == SCHED_ARG_READER ? "reader" : "user"); return -1; }
+			cs_strncpy(s->arg, arg, SCHED_ARG_LEN);
+			break;
+		case SCHED_ARG_SCRIPT:
+		{
+			const char *p;
+			if(!sched_safe_script_name(arg)) { snprintf(err, errlen, "Action %d: select a script.", i + 1); return -1; }
+			for(p = par; *p; p++)
+				if(!(isalnum((unsigned char)*p) || strchr("_./:=+@%, -", *p)))
+				{ snprintf(err, errlen, "Action %d: script arguments may only use letters, digits and _ . / : = + @ %% , -", i + 1); return -1; }
+			snprintf(s->arg, SCHED_ARG_LEN, "%s%s%s", arg, par[0] ? " " : "", par);
+			break;
+		}
+		case SCHED_ARG_NUM:
+		{
+			int v = atoi(arg);
+			if(v < 1 || v > 86400) { snprintf(err, errlen, "Action %d: wait 1 to 86400 seconds.", i + 1); return -1; }
+			snprintf(s->arg, SCHED_ARG_LEN, "%d", v);
+			break;
+		}
+		case SCHED_ARG_TEXT:
+			if(!strcmp(d->act, "api"))
+			{
+				while(*arg == '/') arg++;
+				if(!*arg || strpbrk(arg, " \t")) { snprintf(err, errlen, "Action %d: enter the WebIF page without spaces, e.g. status.html", i + 1); return -1; }
+			}
+			else if(!arg[0]) { snprintf(err, errlen, "Action %d: enter a message.", i + 1); return -1; }
+			cs_strncpy(s->arg, arg, SCHED_ARG_LEN);
+			break;
+		default:
+			break;
+		}
+	}
+	j->nsteps = (int8_t)u->nsteps;
+	return 0;
+}
+
+static void sched_step_text(const sched_step_t *s, char *out, size_t n)
+{
+	const sched_actdef_t *d = sched_actdef_find(s->act);
+	const char *arg = strcmp(s->arg, "*") == 0 ? "all" : s->arg;
+	if(!d) snprintf(out, n, "%s %.60s", s->act, s->arg);
+	else if(d->kind == SCHED_ARG_NONE) cs_strncpy(out, d->label, n);
+	else if(d->kind == SCHED_ARG_NUM) snprintf(out, n, "Wait %s s", s->arg);
+	else if(strcmp(d->act, "log") == 0) snprintf(out, n, "Log: %.60s", s->arg);
+	else if(strcmp(d->act, "api") == 0) snprintf(out, n, "Request: %.60s", s->arg);
+	else snprintf(out, n, "%s: %.60s", d->label, arg);
+}
+
+static void sched_load_targets(struct sched_names *rd, struct sched_names *us, struct sched_names *sc)
+{
+	LL_ITER itr = ll_iter_create(configured_readers);
+	struct s_reader *rdr;
+	struct s_auth *account;
+
+	while((rdr = ll_iter_next(&itr)))
+		if(rdr->label[0] && rdr->typ) sched_names_add(rd, rdr->label);
+	for(account = cfg.account; account; account = account->next)
+		sched_names_add(us, account->usr);
+
+	if(cfg.http_script && cfg.http_script[0])
+	{
+		struct dirent **list = NULL;
+		int i, cnt = scandir(cfg.http_script, &list, NULL, alphasort);
+		for(i = 0; i < cnt; i++)
+		{
+			char path[512];
+			struct stat st;
+			if(sched_safe_script_name(list[i]->d_name) &&
+			   snprintf(path, sizeof(path), "%s/%s", cfg.http_script, list[i]->d_name) < (int)sizeof(path) &&
+			   stat(path, &st) == 0 && (st.st_mode & S_IFREG) && (st.st_mode & S_IXUSR))
+				sched_names_add(sc, list[i]->d_name);
+			free(list[i]);
+		}
+		free(list);
+	}
+}
+
+static void sched_target_options(struct templatevars *vars, const char *var, const char *prompt, const char *all, struct sched_names *n, const char *sel)
+{
+	int i, found = (sel[0] == '\0' || (all && strcmp(sel, "*") == 0));
+	tpl_printf(vars, TPLADD, var, "<OPTION VALUE=\"\">%s</OPTION>", prompt);
+	if(all) tpl_printf(vars, TPLAPPEND, var, "<OPTION VALUE=\"*\"%s>%s</OPTION>", strcmp(sel, "*") == 0 ? " SELECTED" : "", all);
+	for(i = 0; i < n->n; i++)
+	{
+		int s = (sel[0] && strcmp(n->v[i], sel) == 0);
+		found |= s;
+		tpl_printf(vars, TPLAPPEND, var, "<OPTION VALUE=\"%s\"%s>%s</OPTION>",
+			xml_encode(vars, n->v[i]), s ? " SELECTED" : "", xml_encode(vars, n->v[i]));
+	}
+	if(!found)
+		tpl_printf(vars, TPLAPPEND, var, "<OPTION VALUE=\"%s\" SELECTED>%s (not found)</OPTION>",
+			xml_encode(vars, sel), xml_encode(vars, sel));
+}
+
+static const char *sched_kind_name(int kind)
+{
+	static const char *k[] = { "none", "reader", "user", "userall", "script", "num", "text" };
+	return k[kind];
+}
+
+static void sched_action_options(struct templatevars *vars, const char *selact)
+{
+	const sched_actdef_t *d;
+	const char *group = "";
+	int i;
+
+	tpl_addVar(vars, TPLADD, "SCH_AOPTS", "<OPTION VALUE=\"\" DATA-K=\"none\">Select action...</OPTION>");
+	for(i = 0; (d = sched_actdef(i)); i++)
+	{
+		const char *ph = strcmp(d->act, "sleep") == 0 ? "seconds" : strcmp(d->act, "log") == 0 ? "message" : strcmp(d->act, "api") == 0 ? "page, e.g. status.html" : "";
+#ifndef CS_CACHEEX
+		if(strcmp(d->act, "stats.reset_cacheex") == 0) continue;
+#endif
+		if(strcmp(group, d->group) != 0)
+		{
+			if(group[0]) tpl_addVar(vars, TPLAPPEND, "SCH_AOPTS", "</OPTGROUP>");
+			tpl_printf(vars, TPLAPPEND, "SCH_AOPTS", "<OPTGROUP LABEL=\"%s\">", d->group);
+			group = d->group;
+		}
+		tpl_printf(vars, TPLAPPEND, "SCH_AOPTS", "<OPTION VALUE=\"%s\" DATA-K=\"%s\" DATA-PH=\"%s\"%s>%s</OPTION>",
+			d->act, sched_kind_name(d->kind), ph, strcmp(d->act, selact) == 0 ? " SELECTED" : "", d->label);
+	}
+	if(group[0]) tpl_addVar(vars, TPLAPPEND, "SCH_AOPTS", "</OPTGROUP>");
+}
+
+#define SCH_HIDDEN "STYLE=\"display:none\" DISABLED"
+
+/* One row of the action list; tpl=1 renders the hidden row the page script clones */
+static void sched_render_action(struct templatevars *vars, const sched_ui_t *u, int pos, int tpl,
+	struct sched_names *rd, struct sched_names *us, struct sched_names *sc)
+{
+	const char *act = (u && !tpl) ? u->step[pos].act : "";
+	const char *arg = (u && !tpl) ? u->step[pos].arg : "";
+	const sched_actdef_t *d = act[0] ? sched_actdef_find(act) : NULL;
+	int kind = d ? d->kind : SCHED_ARG_NONE;
+	int isuser = (kind == SCHED_ARG_USER || kind == SCHED_ARG_USERALL);
+
+	tpl_printf(vars, TPLADD, "SCH_AIDX", "%d", tpl ? 0 : pos + 1);
+	tpl_addVar(vars, TPLADD, "SCH_ALABEL", (tpl || pos > 0) ? "Then" : "Action");
+	tpl_addVar(vars, TPLADD, "SCH_ACLS", tpl ? " acttpl" : "");
+	tpl_addVar(vars, TPLADD, "SCH_AHIDE", tpl ? "STYLE=\"display:none\"" : "");
+	tpl_addVar(vars, TPLADD, "SCH_ADIS", tpl ? "DISABLED" : "");
+	sched_action_options(vars, act);
+	sched_target_options(vars, "SCH_AROPTS", "Select reader...", "* All readers", rd, kind == SCHED_ARG_READER ? arg : "");
+	sched_target_options(vars, "SCH_AUOPTS", "Select user...", "* All users", us, isuser ? arg : "");
+	sched_target_options(vars, "SCH_ASOPTS", "Select script...", NULL, sc, kind == SCHED_ARG_SCRIPT ? arg : "");
+	tpl_addVar(vars, TPLADD, "SCH_ARG", (kind == SCHED_ARG_NUM || kind == SCHED_ARG_TEXT) ? xml_encode(vars, arg) : "");
+	tpl_addVar(vars, TPLADD, "SCH_PAR", (kind == SCHED_ARG_SCRIPT) ? xml_encode(vars, u->step[pos].par) : "");
+	tpl_addVar(vars, TPLADD, "SCH_ATTR_R", kind == SCHED_ARG_READER ? "" : SCH_HIDDEN);
+	tpl_addVar(vars, TPLADD, "SCH_ATTR_U", isuser ? "" : SCH_HIDDEN);
+	tpl_addVar(vars, TPLADD, "SCH_ATTR_S", kind == SCHED_ARG_SCRIPT ? "" : SCH_HIDDEN);
+	tpl_addVar(vars, TPLADD, "SCH_ATTR_P", kind == SCHED_ARG_SCRIPT ? "" : SCH_HIDDEN);
+	tpl_addVar(vars, TPLADD, "SCH_ATTR_T", (kind == SCHED_ARG_NUM || kind == SCHED_ARG_TEXT) ? "" : SCH_HIDDEN);
+}
+
+/* Ready-made starting points for "New task" */
+static const char *sched_presets[] =
+{
+	"Restart a reader every night",
+	"Reset statistics monthly",
+	"Clean the ECM cache weekly",
+	"Reload readers every 15 minutes"
+};
+
+static void sched_render_edit(struct templatevars *vars, const sched_ui_t *u)
+{
+	struct sched_names rd = {0}, us = {0}, sc = {0};
+	char today[16], date[16];
+	time_t now = cs_time();
+	struct tm tmv;
+	int i, st = u->stype < 0 ? SCHED_DAILY : u->stype;
+	static const char *names[] = { "INTERVAL", "DAILY", "WEEKLY", "MONTHLY", "ONCE", "BOOT" };
+
+	sched_load_targets(&rd, &us, &sc);
+	tpl_printf(vars, TPLADD, "SCH_ID", "%u", u->id);
+	tpl_addVar(vars, TPLADD, "SCH_TITLE", u->id ? "Edit task" : "New task");
+	tpl_addVar(vars, TPLADD, "SCH_NAME", xml_encode(vars, u->name));
+	tpl_addVar(vars, TPLADD, "SCH_ENABLED", u->enabled ? "CHECKED" : "");
+
+	for(i = 0; i < 6; i++)
+	{
+		char name[24];
+		snprintf(name, sizeof(name), "SCH_ST_%s", names[i]);
+		tpl_addVar(vars, TPLADD, name, st == i ? "SELECTED" : "");
+	}
+	tpl_addVar(vars, TPLADD, "SCH_R_INTERVAL", st == SCHED_EVERY ? "" : "schedhide");
+	tpl_addVar(vars, TPLADD, "SCH_R_DAYS", st == SCHED_WEEKLY ? "" : "schedhide");
+	tpl_addVar(vars, TPLADD, "SCH_R_MDAY", st == SCHED_MONTHLY ? "" : "schedhide");
+	tpl_addVar(vars, TPLADD, "SCH_R_DATE", st == SCHED_ONCE ? "" : "schedhide");
+	tpl_addVar(vars, TPLADD, "SCH_R_TIME", (st == SCHED_DAILY || st == SCHED_WEEKLY || st == SCHED_MONTHLY || st == SCHED_ONCE) ? "" : "schedhide");
+	tpl_addVar(vars, TPLADD, "SCH_R_DELAY", st == SCHED_STARTUP ? "" : "schedhide");
+
+	tpl_printf(vars, TPLADD, "SCH_IVALUE", "%d", u->every_n);
+	tpl_addVar(vars, TPLADD, "SCH_IU_S", u->every_u == 's' ? "SELECTED" : "");
+	tpl_addVar(vars, TPLADD, "SCH_IU_M", u->every_u == 'm' ? "SELECTED" : "");
+	tpl_addVar(vars, TPLADD, "SCH_IU_H", u->every_u == 'h' ? "SELECTED" : "");
+	tpl_addVar(vars, TPLADD, "SCH_IU_D", u->every_u == 'd' ? "SELECTED" : "");
+	tpl_addVar(vars, TPLADD, "SCH_TIME", xml_encode(vars, u->times));
+	localtime_r(&now, &tmv);
+	strftime(today, sizeof(today), "%Y-%m-%d", &tmv);
+	cs_strncpy(date, u->date[0] ? u->date : today, sizeof(date));
+	tpl_addVar(vars, TPLADD, "SCH_DATE", xml_encode(vars, date));
+	for(i = 0; i < 7; i++)
+	{
+		char name[16];
+		snprintf(name, sizeof(name), "SCH_DAY%d", i);
+		tpl_addVar(vars, TPLADD, name, (u->wdays & (1u << i)) ? "CHECKED" : "");
+	}
+	tpl_printf(vars, TPLADD, "SCH_MDAY", "%d", u->mday);
+	tpl_printf(vars, TPLADD, "SCH_DELAY", "%d", u->delay_n);
+	tpl_addVar(vars, TPLADD, "SCH_DU_S", u->delay_u == 's' ? "SELECTED" : "");
+	tpl_addVar(vars, TPLADD, "SCH_DU_M", u->delay_u == 'm' ? "SELECTED" : "");
+	tpl_addVar(vars, TPLADD, "SCH_DU_H", u->delay_u == 'h' ? "SELECTED" : "");
+
+	tpl_addVar(vars, TPLADD, "SCH_COPYBTN", u->id ? "<INPUT TYPE=\"button\" VALUE=\"Save as copy\" CLASS=\"schedcopybtn\" TITLE=\"Keep this task and save the form as a new one\" onclick=\"var f=this.form;f.id.value=0;if(f.name.value===f.getAttribute('data-name'))f.name.value+=' (copy)';f.submit()\">" : "");
+	tpl_addVar(vars, TPLADD, "SCH_QUICK", "");
+	if(!u->id && !u->name[0])
+	{
+		tpl_addVar(vars, TPLADD, "SCH_QUICKLINKS", "");
+		for(i = 0; i < 4; i++)
+			tpl_printf(vars, TPLAPPEND, "SCH_QUICKLINKS", "%s<A HREF=\"scheduler.html?action=new&amp;preset=%d\">%s</A>", i ? " &middot; " : "", i, sched_presets[i]);
+		tpl_addVar(vars, TPLADD, "SCH_QUICK", tpl_getTpl(vars, "SCHEDULERQUICK"));
+	}
+	tpl_addVar(vars, TPLADD, "SCH_ACTROWS", "");
+	for(i = 0; i < (u->nsteps > 0 ? u->nsteps : 1); i++)
+	{
+		sched_render_action(vars, u->nsteps > 0 ? u : NULL, i, 0, &rd, &us, &sc);
+		tpl_addVar(vars, TPLAPPEND, "SCH_ACTROWS", tpl_getTpl(vars, "SCHEDULERACTROW"));
+	}
+	sched_render_action(vars, NULL, 0, 1, &rd, &us, &sc);
+	tpl_addVar(vars, TPLADD, "SCH_ACTTPL", tpl_getTpl(vars, "SCHEDULERACTROW"));
+	sched_names_free(&rd); sched_names_free(&us); sched_names_free(&sc);
+}
+
+
+static void sched_ui_set_step(sched_ui_t *u, const char *act, const char *arg)
+{
+	if(u->nsteps >= SCHED_MAX_STEPS) return;
+	cs_strncpy(u->step[u->nsteps].act, act, SCHED_ACT_LEN);
+	cs_strncpy(u->step[u->nsteps].arg, arg, SCHED_ARG_LEN);
+	u->nsteps++;
+}
+
+static void sched_ui_preset(sched_ui_t *u, int n)
+{
+	sched_ui_defaults(u);
+	switch(n)
+	{
+	case 0:
+		cs_strncpy(u->name, "Nightly reader restart", sizeof(u->name));
+		sched_ui_set_step(u, "reader.restart", "");
+		break;
+	case 1:
+		cs_strncpy(u->name, "Monthly statistics reset", sizeof(u->name));
+		u->stype = SCHED_MONTHLY; cs_strncpy(u->times, "00:10", sizeof(u->times));
+		sched_ui_set_step(u, "stats.reset_readers", "");
+		sched_ui_set_step(u, "stats.reset_users", "");
+		break;
+	case 2:
+		cs_strncpy(u->name, "Weekly cache cleanup", sizeof(u->name));
+		u->stype = SCHED_WEEKLY; u->wdays = 1u; cs_strncpy(u->times, "04:00", sizeof(u->times));
+		sched_ui_set_step(u, "cache.clean", "");
+		break;
+	default:
+		cs_strncpy(u->name, "Reload readers", sizeof(u->name));
+		u->stype = SCHED_EVERY; u->every_n = 15; u->every_u = 'm';
+		sched_ui_set_step(u, "system.reload_readers", "");
+	}
+}
+
+static void sched_fmt_time(time_t t, char *out, size_t n)
+{
+	struct tm tmv;
+	localtime_r(&t, &tmv);
+	strftime(out, n, "%Y-%m-%d %H:%M", &tmv);
+}
+
+static void sched_render_list(struct templatevars *vars)
+{
+	sched_job_t *jobs = malloc(sizeof(*jobs) * SCHED_MAX_JOBS);
+	int n = jobs ? sched_snapshot(jobs, SCHED_MAX_JOBS) : 0;
+	int i, k;
+	int8_t master = sched_get_enabled();
+
+	tpl_addVar(vars, TPLADD, "SCH_PWRACT", master ? "0" : "1");
+	tpl_addVar(vars, TPLADD, "SCH_PWRICON", master ? "ICENA" : "ICDIS");
+	tpl_addVar(vars, TPLADD, "SCH_PWRCLS", master ? "schedon" : "");
+	tpl_addVar(vars, TPLADD, "SCH_PWRTXT", master ? "on" : "off");
+	tpl_addVar(vars, TPLADD, "SCH_PWRTITLE", master ? "Click to switch the scheduler off" : "Click to switch the scheduler on");
+
+	{
+		/* one line: how many tasks, which one runs next */
+		int enabled = 0;
+		const sched_job_t *next = NULL;
+		char sum[160], when[40];
+		for(i = 0; i < n; i++)
+		{
+			if(jobs[i].enabled) enabled++;
+			if(jobs[i].enabled && !jobs[i].done && jobs[i].next_run && (!next || jobs[i].next_run < next->next_run)) next = &jobs[i];
+		}
+		snprintf(sum, sizeof(sum), "%d task%s, %d enabled", n, n == 1 ? "" : "s", enabled);
+		tpl_addVar(vars, TPLADD, "SCH_SUMMARY", sum);
+		if(next && master)
+		{
+			sched_fmt_time(next->next_run, when, sizeof(when));
+			snprintf(sum, sizeof(sum), " - next: %s at %s", next->name, when);
+			tpl_addVar(vars, TPLAPPEND, "SCH_SUMMARY", xml_encode(vars, sum));
+		}
+	}
+	tpl_addVar(vars, TPLADD, "SCH_ROWS", "");
+	for(i = 0; i < n; i++)
+	{
+		const sched_job_t *j = &jobs[i];
+		char buf[400], when[40];
+
+		tpl_printf(vars, TPLADD, "SCH_ID", "%u", j->id);
+		tpl_addVar(vars, TPLADD, "SCH_JOB", xml_encode(vars, j->name));
+		tpl_addVar(vars, TPLADD, "SCH_ROWCLASS", j->enabled ? "" : "disabled");
+		tpl_addVar(vars, TPLADD, "SCH_TGLICON", j->enabled ? "ICENA" : "ICDIS");
+		tpl_addVar(vars, TPLADD, "SCH_TGLCLS", j->enabled ? "schedon" : "");
+		tpl_addVar(vars, TPLADD, "SCH_TGLTITLE", j->enabled ? "Enabled - click to disable" : "Disabled - click to enable");
+
+		sched_describe_schedule(j, buf, sizeof(buf));
+		tpl_addVar(vars, TPLADD, "SCH_SCHED", xml_encode(vars, buf));
+
+		tpl_addVar(vars, TPLADD, "SCH_ACTS", "");
+		for(k = 0; k < j->nsteps; k++)
+		{
+			sched_step_text(&j->steps[k], buf, sizeof(buf));
+			if(k) tpl_addVar(vars, TPLAPPEND, "SCH_ACTS", "<BR>");
+			tpl_addVar(vars, TPLAPPEND, "SCH_ACTS", xml_encode(vars, buf));
+		}
+
+		if(j->running) tpl_addVar(vars, TPLADD, "SCH_NEXT", "running");
+		else if(!j->enabled || !master) tpl_addVar(vars, TPLADD, "SCH_NEXT", "-");
+		else if(j->done || !j->next_run) tpl_addVar(vars, TPLADD, "SCH_NEXT", "done");
+		else { sched_fmt_time(j->next_run, when, sizeof(when)); tpl_addVar(vars, TPLADD, "SCH_NEXT", when); }
+
+		if(j->last_run)
+		{
+			sched_fmt_time(j->last_run, when, sizeof(when));
+			snprintf(buf, sizeof(buf), "%s %s", when, j->last_ok ? "OK" : "FAILED");
+			tpl_addVar(vars, TPLADD, "SCH_LAST", xml_encode(vars, buf));
+			tpl_addVar(vars, TPLADD, "SCH_RESCLS", j->last_ok ? "schedok" : "schedfail");
+			tpl_addVar(vars, TPLADD, "SCH_LASTMSG", j->last_ok ? "" : xml_encode(vars, j->last_msg));
+		}
+		else
+		{
+			tpl_addVar(vars, TPLADD, "SCH_LAST", "-");
+			tpl_addVar(vars, TPLADD, "SCH_RESCLS", "");
+			tpl_addVar(vars, TPLADD, "SCH_LASTMSG", "");
+		}
+		tpl_addVar(vars, TPLADD, "SCH_BTNS", cfg.http_readonly ? "" : tpl_getTpl(vars, "SCHEDULERROWBTN"));
+		tpl_addVar(vars, TPLAPPEND, "SCH_ROWS", tpl_getTpl(vars, "SCHEDULERROW"));
+	}
+	if(!n)
+		tpl_addVar(vars, TPLADD, "SCH_ROWS", "<TR><TD COLSPAN=\"7\" CLASS=\"centered\">No tasks yet. Use <I>New task</I> to create one.</TD></TR>");
+	free(jobs);
+}
+
+static char *send_oscam_scheduler(struct templatevars *vars, struct uriparams *params)
+{
+	char action[24] = {0};
+	uint32_t id = (uint32_t)strtoul(getParam(params, "id"), NULL, 10);
+	sched_ui_t *ui = NULL;
+	int view = 0;               /* 0 task list, 1 task form, 2 task.cfg editor */
+	int ro = cfg.http_readonly;
+
+	setActiveMenu(vars, MNU_SCHEDULER);
+	cs_strncpy(action, getParam(params, "action"), sizeof(action));
+	if(action[0] && ro)
+	{
+		tpl_addMsg(vars, "WebIF is read-only. The scheduler cannot be changed.");
+		action[0] = '\0';
+	}
+
+	if(strcmp(action, "power") == 0)
+	{
+		int on = (getParam(params, "enabled")[0] == '1');
+		sched_set_enabled(on);
+		tpl_addMsg(vars, on ? "Scheduler switched on." : "Scheduler switched off.");
+	}
+	else if(strcmp(action, "toggle") == 0)
+	{
+		if(!sched_job_toggle(id)) tpl_addMsg(vars, "Task not found.");
+	}
+	else if(strcmp(action, "delete") == 0)
+		tpl_addMsg(vars, sched_job_delete(id) ? "Task deleted." : "Task not found.");
+	else if(strcmp(action, "run") == 0)
+	{
+		if(!sched_get_enabled()) tpl_addMsg(vars, "The scheduler is off. Switch it on first.");
+		else tpl_addMsg(vars, sched_job_run_now(id) ? "Task started." : "Task not found or already running.");
+	}
+	else if(strcmp(action, "new") == 0 || strcmp(action, "edit") == 0 || strcmp(action, "copy") == 0 || strcmp(action, "save") == 0)
+	{
+		ui = malloc(sizeof(*ui));
+		if(!ui) tpl_addMsg(vars, "Not enough memory.");
+		else if(strcmp(action, "new") == 0)
+		{
+			const char *pv = getParam(params, "preset");
+			if(pv[0] >= '0' && pv[0] <= '3' && !pv[1]) sched_ui_preset(ui, pv[0] - '0');
+			else sched_ui_defaults(ui);
+			view = 1;
+		}
+		else if(strcmp(action, "edit") == 0 || strcmp(action, "copy") == 0)
+		{
+			sched_job_t *jobs = malloc(sizeof(*jobs) * SCHED_MAX_JOBS);
+			int i, n = jobs ? sched_snapshot(jobs, SCHED_MAX_JOBS) : 0;
+			for(i = 0; i < n && jobs[i].id != id; i++) { ; }
+			if(i < n)
+			{
+				sched_ui_from_job(ui, &jobs[i]);
+				if(action[0] == 'c')
+				{
+					char nm[SCHED_NAME_LEN];
+					snprintf(nm, sizeof(nm), "%.50s (copy)", ui->name);
+					cs_strncpy(ui->name, nm, sizeof(ui->name));
+					ui->id = 0;
+				}
+				view = 1;
+			}
+			else tpl_addMsg(vars, "Task not found.");
+			free(jobs);
+		}
+		else
+		{
+			sched_job_t *job = malloc(sizeof(*job));
+			char err[160] = "";
+			sched_ui_from_form(ui, params);
+			if(!job) tpl_addMsg(vars, "Not enough memory.");
+			else if(sched_ui_to_job(ui, job, err, sizeof(err)) != 0) { tpl_addMsg(vars, err); view = 1; }
+			else if(!sched_job_save(job, ui->id, err, sizeof(err))) { char m[200]; snprintf(m, sizeof(m), "Not saved: %s", err); tpl_addMsg(vars, m); view = 1; }
+			else if(err[0]) tpl_addMsg(vars, err);
+			else if(job->stype == SCHED_ONCE && job->once <= cs_time()) tpl_addMsg(vars, "Task saved. That time has already passed, so it will not run.");
+			else tpl_addMsg(vars, "Task saved.");
+			free(job);
+		}
+		if(view == 1 && ui) sched_render_edit(vars, ui);
+	}
+	else if(strcmp(action, "raw") == 0)
+	{
+		char *text = sched_raw_read();
+		view = 2;
+		tpl_addVar(vars, TPLADD, "SCH_RAW", xml_encode(vars, text));
+		free(text);
+	}
+	else if(strcmp(action, "saveraw") == 0)
+	{
+		char err[160] = "";
+		const char *content = getParam(params, "taskcfg");
+		if(sched_raw_write(content, err, sizeof(err))) tpl_addMsg(vars, "task.cfg saved.");
+		else { tpl_addMsg(vars, err); view = 2; tpl_addVar(vars, TPLADD, "SCH_RAW", xml_encode(vars, content)); }
+	}
+
+	/* navigation shared by all views */
+	tpl_addVar(vars, TPLADD, "SCH_NAV0", view == 0 ? "configmenu_selected" : "configmenu");
+	tpl_addVar(vars, TPLADD, "SCH_NAV1", (view == 1 && ui && !ui->id) ? "configmenu_selected" : "configmenu");
+	tpl_addVar(vars, TPLADD, "SCH_NAV2", view == 2 ? "configmenu_selected" : "configmenu");
+	tpl_addVar(vars, TPLADD, "SCH_NAVEDIT", ro ? "" : tpl_getTpl(vars, "SCHEDULERNAVEDIT"));
+
+	if(view == 0) sched_render_list(vars);
+	free(ui);
+	return tpl_getTpl(vars, view == 1 ? "SCHEDULEREDIT" : view == 2 ? "SCHEDULERRAW" : "SCHEDULER");
+}
+
 static char *send_oscam_failban(struct templatevars * vars, struct uriparams * params, int8_t apicall)
 {
 	IN_ADDR_T ip2delete;
@@ -9512,6 +10381,7 @@ static int32_t process_request(FILE * f, IN_ADDR_T in)
 			"/wiki.json",
 			"/wiki_status.json",
 #endif
+			"/scheduler.html",
 		};
 
 		int32_t pagescnt = sizeof(pages) / sizeof(char *); // Calculate the amount of items in array
@@ -9948,6 +10818,13 @@ static int32_t process_request(FILE * f, IN_ADDR_T in)
 				break;
 			case 32:
 				result = send_oscam_wiki_status(vars, &params);
+				break;
+			case 33:
+				result = send_oscam_scheduler(vars, &params);
+				break;
+#else
+			case 31:
+				result = send_oscam_scheduler(vars, &params);
 				break;
 #endif
 			default:

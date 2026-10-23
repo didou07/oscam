@@ -344,3 +344,12 @@ WIKIJSON                      wiki/wiki.json                                    
 WIKIERROR                     wiki/wikierror.json                                         WEBIF_WIKI
 WIKINOTFOUND                  wiki/wikinotfound.json                                      WEBIF_WIKI
 WIKISTATUSJSON                wiki/wikistatus.json                                        WEBIF_WIKI
+SCHEDULER                     scheduler/scheduler.html
+SCHEDULERNAV                  scheduler/scheduler_nav.html
+SCHEDULERNAVEDIT              scheduler/scheduler_navedit.html
+SCHEDULERROW                  scheduler/scheduler_row.html
+SCHEDULERROWBTN               scheduler/scheduler_rowbtn.html
+SCHEDULEREDIT                 scheduler/scheduler_edit.html
+SCHEDULERACTROW               scheduler/scheduler_actrow.html
+SCHEDULERRAW                  scheduler/scheduler_raw.html
+SCHEDULERQUICK                scheduler/scheduler_quick.html

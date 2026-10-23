@@ -20,6 +20,7 @@
 #include "module-led.h"
 #include "module-stat.h"
 #include "module-webif.h"
+#include "module-sched.h"
 #include "module-webif-tpl.h"
 #ifdef WEBIF_WIKI
 #include "webif/pages_wiki.h"
@@ -1930,6 +1931,10 @@ int32_t main(int32_t argc, char *argv[])
 
 	cs_waitforcardinit();
 
+#ifdef WEBIF
+	sched_init();
+#endif
+
 	emm_load_cache();
 	load_emmstat_from_file();
 
@@ -1961,6 +1966,9 @@ int32_t main(int32_t argc, char *argv[])
 #endif
 #ifdef MODULE_STREAMRELAY
 	stop_stream_server();
+#endif
+#ifdef WEBIF
+	sched_shutdown();
 #endif
 	webif_close();
 	azbox_close();

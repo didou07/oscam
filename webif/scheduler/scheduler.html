@@ -1,0 +1,21 @@
+##TPLHEADER##
+##TPLMENU##
+##TPLSCHEDULERNAV##
+##TPLMESSAGE##
+	<DIV CLASS="schedstate">
+		<A HREF="scheduler.html?action=power&amp;enabled=##SCH_PWRACT##" CLASS="##SCH_PWRCLS##" TITLE="##SCH_PWRTITLE##"><IMG CLASS="icon" SRC="image?i=##SCH_PWRICON##" ALT="##SCH_PWRTITLE##"></A>
+		Scheduler is <B>##SCH_PWRTXT##</B> <SPAN CLASS="schedhint">&middot; ##SCH_SUMMARY##</SPAN>
+	</DIV>
+	<TABLE CLASS="status schedtable">
+		<TR>
+			<TH CLASS="centered" WIDTH="22">On</TH>
+			<TH>Task</TH>
+			<TH>Schedule</TH>
+			<TH>Actions</TH>
+			<TH>Next run</TH>
+			<TH>Last run</TH>
+			<TH CLASS="centered">Action</TH>
+		</TR>
+##SCH_ROWS##
+	</TABLE>
+##TPLFOOTER##

@@ -1,0 +1,14 @@
+##TPLHEADER##
+##TPLMENU##
+##TPLSCHEDULERNAV##
+##TPLMESSAGE##
+	<FORM ACTION="scheduler.html" METHOD="post">
+		<INPUT TYPE="hidden" NAME="action" VALUE="saveraw">
+		<TABLE CLASS="config sched">
+			<TR><TH>task.cfg</TH></TR>
+			<TR><TD><TEXTAREA NAME="taskcfg" CLASS="schedraw" ROWS="22" SPELLCHECK="false">##SCH_RAW##</TEXTAREA></TD></TR>
+			<TR><TD CLASS="schedhelp">[job:Name] then enabled=1 and one schedule line: interval=SECONDS, time=HH:MM, weekly=mon,fri HH:MM, datetime=YYYY-MM-DD HH:MM:SS or after_boot=SECONDS. Steps run in order: api=PAGE?QUERY, log=TEXT, sleep=SECONDS, restart=1.</TD></TR>
+			<TR><TD CLASS="configcolsave"><INPUT TYPE="submit" VALUE="Save" TITLE="Save task.cfg"> <INPUT TYPE="button" VALUE="Cancel" onclick="location.href='scheduler.html'"></TD></TR>
+		</TABLE>
+	</FORM>
+##TPLFOOTER##
