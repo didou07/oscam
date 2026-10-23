@@ -2,10 +2,6 @@
 ##TPLMENU##
 ##TPLSCHEDULERNAV##
 ##TPLMESSAGE##
-	<DIV CLASS="schedstate">
-		<A HREF="scheduler.html?action=power&amp;enabled=##SCH_PWRACT##" CLASS="##SCH_PWRCLS##" TITLE="##SCH_PWRTITLE##"><IMG CLASS="icon" SRC="image?i=##SCH_PWRICON##" ALT="##SCH_PWRTITLE##"></A>
-		Scheduler is <B>##SCH_PWRTXT##</B> <SPAN CLASS="schedhint">&middot; ##SCH_SUMMARY##</SPAN>
-	</DIV>
 	<TABLE CLASS="status schedtable">
 		<TR>
 			<TH CLASS="centered" WIDTH="22">On</TH>
@@ -18,4 +14,14 @@
 		</TR>
 ##SCH_ROWS##
 	</TABLE>
+	<script type="text/javascript">
+	(function () {
+		var t = document.querySelectorAll('td.schedacts');
+		for (var i = 0; i < t.length; i++) {
+			var c = t[i].firstChild;
+			while (c && c.nodeType !== 1) c = c.nextSibling;
+			if (c && c.scrollWidth > c.clientWidth) t[i].className += ' more';
+		}
+	})();
+	</script>
 ##TPLFOOTER##

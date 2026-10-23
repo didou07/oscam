@@ -10,8 +10,6 @@
 #include "oscam-time.h"
 #include "cscrypt/md5.h"
 
-// Minimal HTTP client used by the "api" action (talks to the local WebIf).
-
 extern int32_t ssl_active;
 
 #define SCHED_HTTP_QUERY_MAX 1024
@@ -70,7 +68,6 @@ static void digest_header(const char *user, const char *pass, const char *uri, c
 	}
 }
 
-// Returns HTTP status code, or -1 on connection errors.
 static int32_t http_get(int32_t port, const char *uri, const char *auth, char *resp, size_t respsz)
 {
 	struct SOCKADDR sad;
@@ -150,4 +147,4 @@ int32_t sched_api_call(const char *query, char *msg, size_t msglen)
 	return -1;
 }
 
-#endif // WEBIF
+#endif

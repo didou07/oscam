@@ -1,0 +1,13 @@
+##TPLHEADER##
+##TPLMENU##
+##TPLSCHEDULERNAV##
+##TPLMESSAGE##
+	<FORM ACTION="scheduler.html" METHOD="post">
+		<INPUT TYPE="hidden" NAME="action" VALUE="saveactions">
+		<TABLE CLASS="config sched schedactions">
+			<TR><TH>Actions shown in the task form</TH></TR>
+##SCH_ACTLIST##
+			<TR><TD CLASS="configcolsave"><INPUT TYPE="submit" VALUE="Save"> <INPUT TYPE="button" VALUE="Cancel" onclick="location.href='scheduler.html'"></TD></TR>
+		</TABLE>
+	</FORM>
+##TPLFOOTER##

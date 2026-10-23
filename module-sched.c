@@ -8,8 +8,6 @@
 #include "oscam-string.h"
 #include "oscam-time.h"
 
-// Task scheduler: jobs are read from <confdir>/task.cfg and run in worker threads.
-
 extern char cs_confdir[];
 
 static pthread_mutex_t sched_mx = PTHREAD_MUTEX_INITIALIZER;
@@ -17,6 +15,7 @@ static sched_job_t *jobs = NULL;
 static int32_t job_count = 0;
 static uint32_t next_id = 1;
 static int8_t master_enabled = 1;
+static char hidden_actions[512];
 static time_t start_time = 0;
 
 static volatile int8_t sched_running = 0;
@@ -26,29 +25,27 @@ static volatile int32_t workers = 0;
 
 static const sched_actdef_t actions[] =
 {
-	{ "reader.restart",         "Reader",     "Restart reader",             SCHED_ARG_READER },
-	{ "reader.enable",          "Reader",     "Enable reader",              SCHED_ARG_READER },
-	{ "reader.disable",         "Reader",     "Disable reader",             SCHED_ARG_READER },
-	{ "user.enable",            "User",       "Enable user",                SCHED_ARG_USER },
-	{ "user.disable",           "User",       "Disable user",               SCHED_ARG_USER },
-	{ "user.kick",              "User",       "Disconnect user",            SCHED_ARG_USERALL },
-	{ "user.resetstats",        "User",       "Reset user statistics",      SCHED_ARG_USERALL },
-	{ "system.reload_readers",  "OSCam",      "Reload readers",             SCHED_ARG_NONE },
-	{ "system.reload_users",    "OSCam",      "Reload users",               SCHED_ARG_NONE },
-	{ "system.reload_services", "OSCam",      "Reload services",            SCHED_ARG_NONE },
-	{ "system.restart",         "OSCam",      "Restart OSCam",              SCHED_ARG_NONE },
-	{ "system.shutdown",        "OSCam",      "Shut down OSCam",            SCHED_ARG_NONE },
-	{ "stats.reset_readers",    "Statistics", "Reset reader statistics",    SCHED_ARG_NONE },
-	{ "stats.reset_users",      "Statistics", "Reset all user statistics",  SCHED_ARG_NONE },
-	{ "stats.reset_clients",    "Statistics", "Reset client statistics",    SCHED_ARG_NONE },
-	{ "stats.reset_cacheex",    "Statistics", "Reset CacheEX statistics",   SCHED_ARG_NONE },
-	{ "cache.clean",            "Other",      "Clean ECM cache",            SCHED_ARG_NONE },
-	{ "failban.clear",          "Other",      "Clear failban list",         SCHED_ARG_NONE },
-	{ "script.run",             "Other",      "Run script",                 SCHED_ARG_SCRIPT },
-	{ "log",                    "Other",      "Write log message",          SCHED_ARG_TEXT },
-	{ "sleep",                  "Other",      "Wait (seconds)",             SCHED_ARG_NUM },
-	{ "api",                    "Other",      "WebIF request",              SCHED_ARG_TEXT },
-	{ NULL, NULL, NULL, 0 }
+	{ "reader.restart",         "Restart reader",             SCHED_ARG_READER },
+	{ "reader.enable",          "Enable reader",              SCHED_ARG_READER },
+	{ "reader.disable",         "Disable reader",             SCHED_ARG_READER },
+	{ "system.reload_readers",  "Reload readers",             SCHED_ARG_NONE },
+	{ "system.restart",         "Restart OSCam",              SCHED_ARG_NONE },
+	{ "user.enable",            "Enable user",                SCHED_ARG_USER },
+	{ "user.disable",           "Disable user",               SCHED_ARG_USER },
+	{ "user.kick",              "Disconnect user",            SCHED_ARG_USERALL },
+	{ "system.reload_users",    "Reload users",               SCHED_ARG_NONE },
+	{ "system.reload_services", "Reload services",            SCHED_ARG_NONE },
+	{ "cache.clean",            "Clean ECM cache",            SCHED_ARG_NONE },
+	{ "failban.clear",          "Clear failban list",         SCHED_ARG_NONE },
+	{ "stats.reset_readers",    "Reset reader statistics",    SCHED_ARG_NONE },
+	{ "user.resetstats",        "Reset user statistics",      SCHED_ARG_USERALL },
+	{ "stats.reset_users",      "Reset all user statistics",  SCHED_ARG_NONE },
+	{ "stats.reset_clients",    "Reset client statistics",    SCHED_ARG_NONE },
+	{ "stats.reset_cacheex",    "Reset CacheEX statistics",   SCHED_ARG_NONE },
+	{ "log",                    "Write log message",          SCHED_ARG_TEXT },
+	{ "sleep",                  "Wait (seconds)",             SCHED_ARG_NUM },
+	{ "api",                    "WebIF request",              SCHED_ARG_TEXT },
+	{ NULL, NULL, 0 }
 };
 
 static const char *wday_names[] = { "sun", "mon", "tue", "wed", "thu", "fri", "sat" };
@@ -81,8 +78,6 @@ const char *sched_action_label(const char *act)
 	return d ? d->label : act;
 }
 
-/* ---------------------------------------------------------------- time */
-
 static int32_t days_in_month(int32_t year, int32_t mon0)
 {
 	static const int8_t dm[] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
@@ -95,7 +90,6 @@ static int cmp_i16(const void *a, const void *b)
 	return (int)*(const int16_t *)a - (int)*(const int16_t *)b;
 }
 
-// Next run strictly after "from" for calendar based schedules; 0 if none.
 static time_t next_calendar(const sched_job_t *j, time_t from)
 {
 	struct tm base;
@@ -110,7 +104,7 @@ static time_t next_calendar(const sched_job_t *j, time_t from)
 
 		d.tm_mday += off;
 		d.tm_hour = 12; d.tm_min = 0; d.tm_sec = 0; d.tm_isdst = -1;
-		if(mktime(&d) == (time_t)-1) { continue; } // also normalizes d
+		if(mktime(&d) == (time_t)-1) { continue; }
 
 		switch(j->stype)
 		{
@@ -144,7 +138,6 @@ static time_t next_calendar(const sched_job_t *j, time_t from)
 	return 0;
 }
 
-// Next run after "from" (job already fired at "from" or is being set up).
 static time_t compute_next(const sched_job_t *j, time_t from)
 {
 	switch(j->stype)
@@ -206,8 +199,6 @@ void sched_describe_schedule(const sched_job_t *j, char *out, size_t outlen)
 	}
 }
 
-/* -------------------------------------------------------------- parsing */
-
 static int8_t parse_times(const char *val, sched_job_t *j)
 {
 	char buf[128], *p, *save = NULL;
@@ -246,7 +237,7 @@ static int32_t parse_every(const char *val)
 			case 'm': n *= 60; break;
 			case 'h': n *= 3600; break;
 			case 'd': n *= 86400; break;
-			default: break; // 's' or nothing
+			default: break;
 		}
 	}
 	return n > 31536000 ? 31536000 : (int32_t)n;
@@ -283,7 +274,6 @@ static void add_do_line(sched_job_t *j, const char *val)
 	add_step(j, act, arg);
 }
 
-// Fill defaults / validate. Returns 0 and fills err if the job is unusable.
 static int8_t finalize_job(sched_job_t *j, int8_t has_schedule_key, int8_t has_every, int8_t has_time, int8_t has_days, int8_t has_date, int8_t has_delay, char *err, size_t errlen)
 {
 	if(!has_schedule_key)
@@ -309,7 +299,6 @@ static int8_t finalize_job(sched_job_t *j, int8_t has_schedule_key, int8_t has_e
 	return 1;
 }
 
-// Parse task.cfg into tmp[] (max SCHED_MAX_JOBS). Returns number of jobs, sets *enabled.
 static int32_t parse_file(sched_job_t *tmp, int8_t *enabled)
 {
 	char path[300], line[1200];
@@ -322,6 +311,7 @@ static int32_t parse_file(sched_job_t *tmp, int8_t *enabled)
 	snprintf(path, sizeof(path), "%stask.cfg", cs_confdir);
 	fp = fopen(path, "r");
 	if(!fp) { return 0; }
+	hidden_actions[0] = '\0';
 
 #define CLOSE_JOB() do { \
 		if(cur) { \
@@ -363,6 +353,7 @@ static int32_t parse_file(sched_job_t *tmp, int8_t *enabled)
 		if(in_sched)
 		{
 			if(!strcmp(key, "enabled")) { *enabled = atoi(val) ? 1 : 0; }
+			else if(!strcmp(key, "hide")) { cs_strncpy(hidden_actions, val, sizeof(hidden_actions)); }
 			continue;
 		}
 		if(!cur) { continue; }
@@ -381,10 +372,10 @@ static int32_t parse_file(sched_job_t *tmp, int8_t *enabled)
 			else { h_sched = 0; }
 		}
 		else if(!strcmp(key, "every")) { cur->every_sec = parse_every(val); h_every = 1; }
-		else if(!strcmp(key, "interval")) { cur->every_sec = atoi(val); h_every = 1; } // NCam
+		else if(!strcmp(key, "interval")) { cur->every_sec = atoi(val); h_every = 1; }
 		else if(!strcmp(key, "time")) { if(parse_times(val, cur)) { h_time = 1; } }
 		else if(!strcmp(key, "days")) { if(parse_days(val, &cur->wdays)) { h_days = 1; } }
-		else if(!strcmp(key, "weekly")) // NCam: "<day> HH:MM"
+		else if(!strcmp(key, "weekly"))
 		{
 			char d[16], t[16];
 			if(sscanf(val, "%15s %15s", d, t) == 2 && parse_days(d, &cur->wdays) && parse_times(t, cur)) { h_days = 1; h_time = 1; }
@@ -394,10 +385,10 @@ static int32_t parse_file(sched_job_t *tmp, int8_t *enabled)
 			{ cur->once = parse_datetime(val); h_date = 1; }
 		else if(!strcmp(key, "delay") || !strcmp(key, "after_boot")) { cur->delay_sec = atoi(val); h_delay = 1; }
 		else if(!strcmp(key, "do")) { add_do_line(cur, val); }
-		else if(!strcmp(key, "api")) { add_step(cur, "api", val); }   // NCam
-		else if(!strcmp(key, "restart")) { if(atoi(val) == 1) { add_step(cur, "system.restart", ""); } } // NCam
-		else if(!strcmp(key, "log")) { add_step(cur, "log", val); }   // NCam
-		else if(!strcmp(key, "sleep")) { if(atoi(val) > 0) { add_step(cur, "sleep", val); } } // NCam
+		else if(!strcmp(key, "api")) { add_step(cur, "api", val); }
+		else if(!strcmp(key, "restart")) { if(atoi(val) == 1) { add_step(cur, "system.restart", ""); } }
+		else if(!strcmp(key, "log")) { add_step(cur, "log", val); }
+		else if(!strcmp(key, "sleep")) { if(atoi(val) > 0) { add_step(cur, "sleep", val); } }
 	}
 	CLOSE_JOB();
 #undef CLOSE_JOB
@@ -405,14 +396,11 @@ static int32_t parse_file(sched_job_t *tmp, int8_t *enabled)
 	return n;
 }
 
-/* -------------------------------------------------------------- writing */
-
 static void clean_text(char *s)
 {
 	for(; *s; s++) { if(*s == '\n' || *s == '\r') { *s = ' '; } }
 }
 
-// Caller holds sched_mx.
 static int8_t write_file_locked(void)
 {
 	char path[300], tmp[310];
@@ -426,6 +414,7 @@ static int8_t write_file_locked(void)
 
 	fprintf(fp, "# OSCam task scheduler - managed by WebIF > Scheduler (can also be edited by hand,\n"
 	            "# then save it from the task.cfg tab to apply it).\n\n[scheduler]\nenabled = %d\n", master_enabled ? 1 : 0);
+	if(hidden_actions[0]) { fprintf(fp, "hide = %s\n", hidden_actions); }
 
 	for(i = 0; i < job_count; i++)
 	{
@@ -470,8 +459,6 @@ static int8_t write_file_locked(void)
 	return 1;
 }
 
-/* ------------------------------------------------------------- execution */
-
 typedef struct
 {
 	char name[SCHED_NAME_LEN];
@@ -485,56 +472,12 @@ static void sleep_interruptible(int32_t seconds)
 	for(i = 0; i < seconds * 10 && sched_running; i++) { cs_sleepms(100); }
 }
 
-static int8_t has_ext(const char *path, const char *ext)
-{
-	size_t lp = strlen(path), le = strlen(ext);
-	return lp > le && !strcasecmp(path + lp - le, ext);
-}
-
-static int32_t run_script(const char *arg, char *msg, size_t msglen)
-{
-	char name[128], params[300] = "", cmd[600], buf[256];
-	struct stat st;
-	FILE *fp;
-	int32_t rc;
-	const char *sp;
-
-	if(!cfg.http_script || !*cfg.http_script) { snprintf(msg, msglen, "no script directory configured (httpscript)"); return -1; }
-	sp = arg;
-	{
-		size_t n = 0;
-		while(*sp && !isspace((unsigned char)*sp) && n < sizeof(name) - 1) { name[n++] = *sp++; }
-		name[n] = '\0';
-		while(*sp && isspace((unsigned char)*sp)) { sp++; }
-		cs_strncpy(params, sp, sizeof(params));
-	}
-	if(!*name || strchr(name, '/') || strstr(name, "..")) { snprintf(msg, msglen, "invalid script name"); return -1; }
-	if(!has_ext(name, ".script") && !has_ext(name, ".sh")) { snprintf(msg, msglen, "script must end with .script or .sh"); return -1; }
-	snprintf(cmd, sizeof(cmd), "%s/%s", cfg.http_script, name);
-	if(stat(cmd, &st) || !S_ISREG(st.st_mode)) { snprintf(msg, msglen, "script '%s' not found", name); return -1; }
-	if(!(st.st_mode & S_IXUSR)) { snprintf(msg, msglen, "script '%s' is not executable", name); return -1; }
-	if(*params)
-	{
-		if(strpbrk(params, "\n\r")) { snprintf(msg, msglen, "invalid script parameters"); return -1; }
-		cs_strncat(cmd, " ", sizeof(cmd));
-		cs_strncat(cmd, params, sizeof(cmd));
-	}
-	fp = popen(cmd, "r");
-	if(!fp) { snprintf(msg, msglen, "cannot start script '%s'", name); return -1; }
-	while(fgets(buf, sizeof(buf), fp)) { trim(buf); if(*buf) { cs_log("script %s: %s", name, buf); } }
-	rc = pclose(fp);
-	rc = (rc == -1) ? -1 : (rc >> 8) & 0xff;
-	if(rc) { snprintf(msg, msglen, "script '%s' returned %d", name, rc); return -1; }
-	return 0;
-}
-
 static int32_t run_step(const char *job, const sched_step_t *s, char *msg, size_t msglen)
 {
 	msg[0] = '\0';
 	if(!strcmp(s->act, "sleep")) { sleep_interruptible(atoi(s->arg)); return 0; }
 	if(!strcmp(s->act, "log")) { cs_log("[%s] %s", job, s->arg); return 0; }
 	if(!strcmp(s->act, "api")) { return sched_api_call(s->arg, msg, msglen); }
-	if(!strcmp(s->act, "script.run")) { return run_script(s->arg, msg, msglen); }
 	if(!sched_is_known_action(s->act)) { snprintf(msg, msglen, "unknown action '%s'", s->act); return -1; }
 	return sched_exec_action(s->act, s->arg, msg, msglen);
 }
@@ -579,7 +522,6 @@ static void *worker_main(void *arg)
 	return NULL;
 }
 
-// Caller holds sched_mx. Starts a worker for job j.
 static void launch_locked(sched_job_t *j)
 {
 	run_ctx_t *ctx;
@@ -625,7 +567,7 @@ static void *scheduler_main(void *UNUSED(arg))
 				if(j->stype == SCHED_ONCE || j->stype == SCHED_STARTUP) { j->next_run = 0; j->done = 1; }
 				else
 				{
-					// skip missed slots (e.g. after a long suspend) instead of running them in a burst
+
 					j->next_run = compute_next(j, now);
 				}
 				launch_locked(j);
@@ -637,9 +579,6 @@ static void *scheduler_main(void *UNUSED(arg))
 	return NULL;
 }
 
-/* ----------------------------------------------------------- public API */
-
-// Caller holds sched_mx. Initial next_run for a freshly loaded/edited job.
 static void init_next_locked(sched_job_t *j)
 {
 	time_t now = cs_time();
@@ -666,7 +605,7 @@ static int8_t load_locked(void)
 		sched_job_t *nj = &tmp[i];
 		nj->id = next_id++;
 		init_next_locked(nj);
-		for(k = 0; k < job_count; k++) // keep run statistics of jobs that existed before
+		for(k = 0; k < job_count; k++)
 		{
 			if(!strcmp(jobs[k].name, nj->name))
 			{
@@ -723,6 +662,21 @@ void sched_shutdown(void)
 int8_t sched_get_enabled(void)
 {
 	return master_enabled;
+}
+
+void sched_get_hidden(char *out, size_t n)
+{
+	pthread_mutex_lock(&sched_mx);
+	cs_strncpy(out, hidden_actions, n);
+	pthread_mutex_unlock(&sched_mx);
+}
+
+void sched_set_hidden(const char *csv)
+{
+	pthread_mutex_lock(&sched_mx);
+	cs_strncpy(hidden_actions, csv, sizeof(hidden_actions));
+	write_file_locked();
+	pthread_mutex_unlock(&sched_mx);
 }
 
 void sched_set_enabled(int8_t on)
@@ -793,7 +747,7 @@ uint32_t sched_job_save(const sched_job_t *job, uint32_t id, char *err, size_t e
 		nj.last_run = old->last_run; nj.run_count = old->run_count; nj.last_ok = old->last_ok;
 		cs_strncpy(nj.last_msg, old->last_msg, SCHED_MSG_LEN);
 		nj.running = old->running;
-		if(strcmp(old->name, nj.name) && old->running) { nj.running = 0; } // a renamed running job can't report back
+		if(strcmp(old->name, nj.name) && old->running) { nj.running = 0; }
 		init_next_locked(&nj);
 		*old = nj;
 		rid = nj.id;
@@ -870,8 +824,6 @@ int8_t sched_reload(void)
 	return ok;
 }
 
-/* ------------------------------------------------------------ raw file */
-
 #define SCHED_RAW_MAX 65535
 
 char *sched_raw_read(void)
@@ -918,4 +870,4 @@ int8_t sched_raw_write(const char *text, char *err, size_t errlen)
 	return ok;
 }
 
-#endif // WEBIF
+#endif

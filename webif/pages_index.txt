@@ -352,4 +352,4 @@ SCHEDULERROWBTN               scheduler/scheduler_rowbtn.html
 SCHEDULEREDIT                 scheduler/scheduler_edit.html
 SCHEDULERACTROW               scheduler/scheduler_actrow.html
 SCHEDULERRAW                  scheduler/scheduler_raw.html
-SCHEDULERQUICK                scheduler/scheduler_quick.html
+SCHEDULERACTIONS              scheduler/scheduler_actions.html

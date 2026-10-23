@@ -1296,30 +1296,11 @@ a.wiki-active {
 	position:relative;
 	z-index:2
 }
-div.schedstate {
-	margin:5px 0;
-	font-size:12px
-}
-div.schedstate img.icon {
-	vertical-align:middle;
-	margin-right:4px
-}
 a.schedon img.icon {
 	background-color:#0A0
 }
 a.schedon:hover img.icon {
 	background-color:#F00
-}
-table.schedtable td {
-	padding:3px 5px
-}
-table.schedtable td.schedbtn {
-	width:1%;
-	white-space:nowrap;
-	text-align:center
-}
-table.schedtable td.schedbtn a {
-	margin:0 2px
 }
 td.schedok {
 	color:#080;
@@ -1328,82 +1309,6 @@ td.schedok {
 td.schedfail {
 	color:#C00;
 	font-weight:700
-}
-table.sched {
-	width:100%;
-	max-width:700px;
-	white-space:normal
-}
-table.sched td {
-	padding:2px 5px;
-	text-align:left
-}
-table.sched td:first-child {
-	width:70px;
-	white-space:nowrap
-}
-table.sched td.configcolsave {
-	text-align:center
-}
-table.sched label {
-	margin-right:8px;
-	white-space:nowrap
-}
-table.sched input.a-text {
-	width:200px
-}
-table.sched input.a-par {
-	width:150px
-}
-table.sched a.actdel img.icon {
-	vertical-align:middle;
-	margin-left:3px
-}
-table.sched input[type=button] {
-	width:70px
-}
-tr.schedhide {
-	display:none
-}
-span.schedhint {
-	font-weight:400
-}
-td.schedhelp {
-	font-size:11px;
-	color:#555
-}
-textarea.schedraw {
-	width:100%;
-	font-family:monospace;
-	font-size:12px;
-	white-space:pre
-}
-table.schedtable th:nth-child(2) { width:22% }
-table.schedtable th:nth-child(3) { width:20% }
-table.schedtable th:nth-child(5), table.schedtable th:nth-child(6) { width:15% }
-td.schedsum {
-	font-style:italic;
-	padding:6px 8px
-}
-td.schedquick {
-	font-size:11px
-}
-a.schedcopy {
-	font-size:10px;
-	margin-left:6px
-}
-td.schedbtn a.schedcopy {
-	vertical-align:middle;
-	margin-left:6px;
-	font-size:11px
-}
-table.sched input.schedcopybtn {
-	width:100px !important
-}
-div.schedstate {
-	text-align:center;
-	font-size:14px;
-	margin:10px 0
 }
 table.schedtable, table.sched {
 	margin-left:auto;
@@ -1416,13 +1321,82 @@ table.schedtable th, table.sched th {
 	font-size:13px;
 	text-align:center
 }
-table.schedtable td, table.sched td, table.sched td:first-child {
+table.schedtable th:nth-child(2) { width:12% }
+table.schedtable th:nth-child(3) { width:14% }
+table.schedtable th:nth-child(4) { width:34% }
+table.schedtable th:nth-child(5), table.schedtable th:nth-child(6) { width:12% }
+table.schedtable td {
+	padding:3px 5px;
 	text-align:center;
 	vertical-align:middle
 }
+table.schedtable td.schedbtn {
+	width:1%;
+	white-space:nowrap;
+	text-align:center
+}
+table.schedtable td.schedbtn a {
+	margin:0 2px
+}
+table.schedtable td.schedacts {
+	position:relative;
+	max-width:0;
+	line-height:1.6
+}
+table.schedtable td.schedacts.more {
+	cursor:help
+}
+table.schedtable td.schedacts.more:hover div.schedfull {
+	display:block;
+	position:absolute;
+	left:0;
+	top:0;
+	width:100%;
+	box-sizing:border-box;
+	padding:3px 5px;
+	background-color:#FFC;
+	white-space:normal;
+	text-align:center;
+	border:1px solid #999;
+	box-shadow:2px 2px 6px rgba(0,0,0,.35);
+	z-index:10
+}
+div.schedclamp {
+	overflow:hidden;
+	white-space:nowrap;
+	text-overflow:ellipsis
+}
+div.schedfull {
+	display:none
+}
+span.schedarrow {
+	color:#888
+}
+span.schedstep {
+	white-space:nowrap
+}
+table.sched {
+	width:100%;
+	max-width:700px;
+	white-space:normal
+}
+table.sched td, table.sched td:first-child {
+	padding:2px 5px;
+	text-align:center;
+	vertical-align:middle
+}
+table.sched td + td {
+	text-align:left;
+	padding-left:12px
+}
 table.sched td:first-child {
 	width:90px;
+	white-space:nowrap;
 	font-weight:700
+}
+table.sched label {
+	margin-right:8px;
+	white-space:nowrap
 }
 table.sched select, table.sched input, table.sched textarea {
 	font-family:Arial, Helvetica, sans-serif;
@@ -1435,31 +1409,68 @@ table.sched input[type=text] {
 	height:20px;
 	text-align:center
 }
-table.sched input.a-text, table.sched input.a-par, table.sched input.longer, table.sched input.medium {
+table.sched input.a-text, table.sched input.longer, table.sched input.medium {
 	text-align:left
 }
+table.sched input.a-text {
+	width:200px
+}
+table.sched input[type=button] {
+	width:70px
+}
+table.sched input.schedcopybtn {
+	width:100px !important
+}
+table.sched a.actdel img.icon {
+	vertical-align:middle;
+	margin-left:3px
+}
 table.sched td.schedhelp {
+	width:auto;
+	white-space:normal;
 	font-size:12px;
+	font-weight:400;
 	color:#444;
 	text-align:center
 }
-td.schedsum {
+table.sched td.schedsum {
+	width:auto;
+	white-space:normal;
+	text-align:left;
+	padding:6px 10px;
 	font-size:14px;
-	font-style:normal;
 	font-weight:700;
-	color:#036;
-	padding:8px 10px
+	color:#036
 }
-td.schedquick {
-	font-size:12px
+div.schedsumbox div.sumwhen {
+	margin-bottom:3px
+}
+div.schedsumbox div.sumstep {
+	padding-left:16px;
+	text-indent:-16px;
+	font-weight:400;
+	font-family:"Courier New", monospace;
+	word-break:break-all
+}
+table.schedactions td:first-child {
+	width:auto;
+	text-align:left;
+	font-weight:400;
+	padding-left:30%
+}
+tr.schedhide {
+	display:none
 }
 span.schedhint {
-	font-size:12px
+	font-size:12px;
+	font-weight:400
 }
 textarea.schedraw {
 	display:block;
+	width:100%;
 	margin:0 auto;
 	font-family:"Courier New", monospace;
 	font-size:13px;
+	white-space:pre;
 	text-align:left
 }

@@ -11,7 +11,6 @@
 				<TD>Name:</TD>
 				<TD><INPUT TYPE="text" NAME="name" CLASS="longer" MAXLENGTH="120" VALUE="##SCH_NAME##"> <LABEL><INPUT TYPE="checkbox" NAME="enabled" VALUE="1" ##SCH_ENABLED##>Enabled</LABEL></TD>
 			</TR>
-##SCH_QUICK##
 			<TR><TH COLSPAN="2">Do <SPAN CLASS="schedhint">(in this order)</SPAN></TH></TR>
 ##SCH_ACTROWS##
 ##SCH_ACTTPL##
@@ -55,7 +54,7 @@
 				<TD><INPUT TYPE="text" NAME="delay" CLASS="short" MAXLENGTH="7" VALUE="##SCH_DELAY##"> <SELECT NAME="dunit"><OPTION VALUE="s" ##SCH_DU_S##>seconds</OPTION><OPTION VALUE="m" ##SCH_DU_M##>minutes</OPTION><OPTION VALUE="h" ##SCH_DU_H##>hours</OPTION></SELECT> after OSCam starts</TD>
 			</TR>
 			<TR><TH COLSPAN="2">Summary</TH></TR>
-			<TR><TD COLSPAN="2" CLASS="schedsum" ID="schedsum"></TD></TR>
+			<TR><TD COLSPAN="2" CLASS="schedsum"><DIV CLASS="schedsumbox" ID="schedsum"></DIV></TD></TR>
 			<TR><TD CLASS="configcolsave" COLSPAN="2"><INPUT TYPE="submit" VALUE="Save" TITLE="Save task"> <INPUT TYPE="button" VALUE="Cancel" TITLE="Back to the task list" onclick="location.href='scheduler.html'"> ##SCH_COPYBTN##</TD></TR>
 		</TABLE>
 	</FORM>
@@ -68,7 +67,6 @@
 		function each(list, fn) { Array.prototype.forEach.call(list, fn); }
 		function rows() { return form.querySelectorAll('tr.actrow:not(.acttpl)'); }
 
-		/* show only the schedule fields that belong to the chosen schedule */
 		function syncWhen() {
 			var t = document.getElementById('stype').value;
 			each(form.querySelectorAll('tr[data-for]'), function (tr) {
@@ -76,13 +74,11 @@
 			});
 		}
 
-		/* show only the input that the chosen action needs */
 		function syncRow(tr) {
 			var sel = tr.querySelector('.actsel');
 			var opt = sel.options[sel.selectedIndex];
 			var k = opt ? opt.getAttribute('data-k') : 'none';
-			var map = { 'a-reader': k === 'reader', 'a-user': k === 'user' || k === 'userall', 'a-script': k === 'script',
-			            'a-par': k === 'script', 'a-text': k === 'num' || k === 'text' };
+			var map = { 'a-reader': k === 'reader', 'a-user': k === 'user' || k === 'userall', 'a-text': k === 'num' || k === 'text' };
 			var all = tr.querySelector('.a-user option[value="*"]');
 			if (all) {
 				all.disabled = k !== 'userall';
@@ -126,27 +122,22 @@
 			}
 		});
 
-		/* rows are numbered on submit so adding and removing needs no bookkeeping */
 		form.addEventListener('submit', function () {
 			each(rows(), function (tr, i) {
 				each(tr.querySelectorAll('select,input'), function (el) { el.name = el.name.replace(/\d+$/, '') + (i + 1); });
 			});
 		});
 
-
-		/* one sentence that says what the task will do, updated as you type */
 		function rowText(tr) {
 			var sel = tr.querySelector('.actsel'), opt = sel.options[sel.selectedIndex];
 			if (!sel.value) return '';
 			var arg = '';
-			['a-reader', 'a-user', 'a-script'].forEach(function (c) {
+			['a-reader', 'a-user'].forEach(function (c) {
 				var e = tr.querySelector('.' + c);
 				if (e && !e.disabled && e.value) arg = e.value === '*' ? 'all' : e.value;
 			});
 			var t = tr.querySelector('.a-text');
 			if (t && !t.disabled && t.value) arg = t.value;
-			var p = tr.querySelector('.a-par');
-			if (p && !p.disabled && p.value) arg += ' ' + p.value;
 			if (sel.value === 'sleep') return 'wait ' + arg + ' s';
 			return opt.text.toLowerCase() + (arg ? ' ' + arg : '');
 		}
@@ -165,7 +156,18 @@
 			var parts = [];
 			each(rows(), function (tr) { var x = rowText(tr); if (x) parts.push(x); });
 			var box = document.getElementById('schedsum');
-			box.textContent = parts.length ? whenText().replace(/^./, function (c) { return c.toUpperCase(); }) + ': ' + parts.join(' \u2192 ') : 'Choose an action to see what this task will do.';
+			while (box.firstChild) box.removeChild(box.firstChild);
+			if (!parts.length) { box.textContent = 'Choose an action to see what this task will do.'; return; }
+			var head = document.createElement('div');
+			head.className = 'sumwhen';
+			head.textContent = whenText().replace(/^./, function (c) { return c.toUpperCase(); }) + ':';
+			box.appendChild(head);
+			parts.forEach(function (x, i) {
+				var d = document.createElement('div');
+				d.className = 'sumstep';
+				d.textContent = (i + 1) + '. ' + x;
+				box.appendChild(d);
+			});
 		}
 		form.addEventListener('input', summary);
 		form.addEventListener('change', summary);
