@@ -79,6 +79,7 @@ static int32_t http_get(int32_t port, const char *uri, const char *auth, char *r
 	memset(&sad, 0, sizeof(sad));
 	SIN_GET_FAMILY(sad) = DEFAULT_AF;
 	if(IP_ISSET(cfg.http_srvip)) { IP_ASSIGN(SIN_GET_ADDR(sad), cfg.http_srvip); }
+	else if(IP_ISSET(cfg.srvip)) { IP_ASSIGN(SIN_GET_ADDR(sad), cfg.srvip); }
 	else { set_localhost_ip(&SIN_GET_ADDR(sad)); }
 	SIN_GET_PORT(sad) = htons(port);
 
@@ -143,6 +144,7 @@ int32_t sched_api_call(const char *query, char *msg, size_t msglen)
 	}
 	if(code >= 200 && code < 300) { return 0; }
 	if(code == 401) { snprintf(msg, msglen, "WebIF rejected the login (httpuser/httppwd)"); return -1; }
+	if(code == 403) { snprintf(msg, msglen, "WebIF refused this machine: add 127.0.0.1 (or the server IP) to httpallowed"); return -1; }
 	snprintf(msg, msglen, "WebIF answered HTTP %d", code);
 	return -1;
 }

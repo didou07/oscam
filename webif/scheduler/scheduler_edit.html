@@ -26,12 +26,13 @@
 						<OPTION VALUE="monthly" ##SCH_ST_MONTHLY##>On a day of the month</OPTION>
 						<OPTION VALUE="once" ##SCH_ST_ONCE##>Once, on a date</OPTION>
 						<OPTION VALUE="boot" ##SCH_ST_BOOT##>After OSCam starts</OPTION>
+						<OPTION VALUE="loop" ##SCH_ST_LOOP##>Loop, repeat non-stop</OPTION>
 					</SELECT>
 				</TD>
 			</TR>
-			<TR CLASS="##SCH_R_INTERVAL##" DATA-FOR="interval">
-				<TD>Every:</TD>
-				<TD><INPUT TYPE="text" NAME="ivalue" CLASS="short" MAXLENGTH="7" VALUE="##SCH_IVALUE##"> <SELECT NAME="iunit"><OPTION VALUE="s" ##SCH_IU_S##>seconds</OPTION><OPTION VALUE="m" ##SCH_IU_M##>minutes</OPTION><OPTION VALUE="h" ##SCH_IU_H##>hours</OPTION><OPTION VALUE="d" ##SCH_IU_D##>days</OPTION></SELECT></TD>
+			<TR CLASS="##SCH_R_INTERVAL##" DATA-FOR="interval loop">
+				<TD ID="ilabel">Every:</TD>
+				<TD><INPUT TYPE="text" NAME="ivalue" CLASS="short" MAXLENGTH="7" VALUE="##SCH_IVALUE##"> <SELECT NAME="iunit"><OPTION VALUE="s" ##SCH_IU_S##>seconds</OPTION><OPTION VALUE="m" ##SCH_IU_M##>minutes</OPTION><OPTION VALUE="h" ##SCH_IU_H##>hours</OPTION><OPTION VALUE="d" ##SCH_IU_D##>days</OPTION></SELECT> <SPAN CLASS="schedhint" ID="ihint"></SPAN></TD>
 			</TR>
 			<TR CLASS="##SCH_R_DAYS##" DATA-FOR="weekly">
 				<TD>Days:</TD>
@@ -72,6 +73,8 @@
 			each(form.querySelectorAll('tr[data-for]'), function (tr) {
 				tr.className = (' ' + tr.getAttribute('data-for') + ' ').indexOf(' ' + t + ' ') >= 0 ? '' : 'schedhide';
 			});
+			document.getElementById('ilabel').textContent = t === 'loop' ? 'Pause:' : 'Every:';
+			document.getElementById('ihint').textContent = t === 'loop' ? 'between rounds (0 = start again at once)' : '';
 		}
 
 		function syncRow(tr) {
@@ -97,7 +100,11 @@
 		}
 
 		form.addEventListener('change', function (e) {
-			if (e.target.id === 'stype') syncWhen();
+			if (e.target.id === 'stype') {
+				syncWhen();
+				if (e.target.value === 'loop' && form.ivalue.value === '15' && form.iunit.value === 'm') { form.ivalue.value = '0'; form.iunit.value = 's'; }
+				if (e.target.value === 'interval' && form.ivalue.value === '0') { form.ivalue.value = '15'; form.iunit.value = 'm'; }
+			}
 			if (e.target.className === 'actsel') syncRow(e.target.parentNode.parentNode);
 		});
 
@@ -113,6 +120,12 @@
 				tr.querySelector('.actsel').disabled = false;
 				addrow.parentNode.insertBefore(tr, addrow);
 				syncRow(tr); labels();
+			} else if (a.className.indexOf('actmv') >= 0) {
+				e.preventDefault();
+				var row = a.parentNode.parentNode, all = rows(), pos = Array.prototype.indexOf.call(all, row);
+				if (a.className.indexOf('actup') >= 0 && pos > 0) row.parentNode.insertBefore(row, all[pos - 1]);
+				else if (a.className.indexOf('actdown') >= 0 && pos < all.length - 1) row.parentNode.insertBefore(all[pos + 1], row);
+				labels();
 			} else if (a.className === 'actdel') {
 				e.preventDefault();
 				var row = a.parentNode.parentNode;
@@ -139,6 +152,7 @@
 			var t = tr.querySelector('.a-text');
 			if (t && !t.disabled && t.value) arg = t.value;
 			if (sel.value === 'sleep') return 'wait ' + arg + ' s';
+			if (sel.value === 'repeat') return parseInt(arg, 10) > 0 ? 'repeat the actions below ' + parseInt(arg, 10) + ' time(s)' : 'repeat the actions below non-stop';
 			return opt.text.toLowerCase() + (arg ? ' ' + arg : '');
 		}
 		function whenText() {
@@ -146,6 +160,7 @@
 			var u = { s: 'second(s)', m: 'minute(s)', h: 'hour(s)', d: 'day(s)' };
 			for (d = 1; d <= 7; d++) if (f['d' + (d % 7)].checked) days.push(names[d % 7]);
 			if (t === 'interval') return 'every ' + f.ivalue.value + ' ' + u[f.iunit.value];
+			if (t === 'loop') return parseInt(f.ivalue.value, 10) > 0 ? 'in a loop, pausing ' + f.ivalue.value + ' ' + u[f.iunit.value] + ' between rounds' : 'in a loop, non-stop';
 			if (t === 'daily') return 'every day at ' + f.time.value;
 			if (t === 'weekly') return 'on ' + (days.join(', ') || '...') + ' at ' + f.time.value;
 			if (t === 'monthly') return 'on day ' + f.mday.value + ' of each month at ' + f.time.value;
@@ -154,7 +169,13 @@
 		}
 		function summary() {
 			var parts = [];
-			each(rows(), function (tr) { var x = rowText(tr); if (x) parts.push(x); });
+			var inloop = false;
+			each(rows(), function (tr) {
+				var x = rowText(tr);
+				if (!x) return;
+				parts.push({ t: x, loop: inloop });
+				if (tr.querySelector('.actsel').value === 'repeat') inloop = true;
+			});
 			var box = document.getElementById('schedsum');
 			while (box.firstChild) box.removeChild(box.firstChild);
 			if (!parts.length) { box.textContent = 'Choose an action to see what this task will do.'; return; }
@@ -164,8 +185,8 @@
 			box.appendChild(head);
 			parts.forEach(function (x, i) {
 				var d = document.createElement('div');
-				d.className = 'sumstep';
-				d.textContent = (i + 1) + '. ' + x;
+				d.className = 'sumstep' + (x.loop ? ' sumloop' : '');
+				d.textContent = (i + 1) + '. ' + x.t;
 				box.appendChild(d);
 			});
 		}

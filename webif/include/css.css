@@ -1323,8 +1323,9 @@ table.schedtable th, table.sched th {
 }
 table.schedtable th:nth-child(2) { width:12% }
 table.schedtable th:nth-child(3) { width:14% }
-table.schedtable th:nth-child(4) { width:34% }
-table.schedtable th:nth-child(5), table.schedtable th:nth-child(6) { width:12% }
+table.schedtable th:nth-child(4) { width:30% }
+table.schedtable th:nth-child(5), table.schedtable th:nth-child(6) { width:14% }
+table.schedtable td:nth-child(5), table.schedtable td:nth-child(6) { white-space:nowrap }
 table.schedtable td {
 	padding:3px 5px;
 	text-align:center;
@@ -1421,6 +1422,23 @@ table.sched input[type=button] {
 table.sched input.schedcopybtn {
 	width:100px !important
 }
+table.sched a.actmv {
+	display:inline-block;
+	width:20px;
+	margin-left:3px;
+	font-size:12px;
+	line-height:22px;
+	text-align:center;
+	text-decoration:none;
+	color:#036;
+	background-color:#DDD;
+	border:1px solid #AAA;
+	border-radius:3px;
+	vertical-align:middle
+}
+table.sched a.actmv:hover {
+	background-color:#BCD
+}
 table.sched a.actdel img.icon {
 	vertical-align:middle;
 	margin-left:3px
@@ -1444,6 +1462,11 @@ table.sched td.schedsum {
 }
 div.schedsumbox div.sumwhen {
 	margin-bottom:3px
+}
+div.schedsumbox div.sumloop {
+	margin-left:14px;
+	padding-left:8px;
+	border-left:3px solid #9bc
 }
 div.schedsumbox div.sumstep {
 	padding-left:16px;

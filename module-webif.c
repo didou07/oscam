@@ -8028,7 +8028,8 @@ static void sched_ui_from_job(sched_ui_t *u, const sched_job_t *j)
 	cs_strncpy(u->name, j->name, sizeof(u->name));
 	u->enabled = j->enabled;
 	u->stype = j->stype;
-	if(j->every_sec > 0)
+	if(j->stype == SCHED_LOOP && j->every_sec == 0) { u->every_n = 0; u->every_u = 's'; }
+	else if(j->every_sec > 0)
 	{
 		int s = j->every_sec;
 		if(s % 86400 == 0) { u->every_n = s / 86400; u->every_u = 'd'; }
@@ -8065,7 +8066,7 @@ static char sched_unit(const char *v, const char *allowed, char def)
 
 static void sched_ui_from_form(sched_ui_t *u, struct uriparams *params)
 {
-	static const char *types[] = { "every", "daily", "weekly", "monthly", "once", "startup" };
+	static const char *types[] = { "every", "daily", "weekly", "monthly", "once", "startup", "loop" };
 	char key[16];
 	const char *v;
 	int i, n = 0;
@@ -8077,7 +8078,7 @@ static void sched_ui_from_form(sched_ui_t *u, struct uriparams *params)
 	u->enabled = (getParam(params, "enabled")[0] == '1');
 	u->stype = -1;
 	v = getParam(params, "stype");
-	for(i = 0; i < 6; i++) if(strcmp(v, types[i]) == 0) u->stype = i;
+	for(i = 0; i < 7; i++) if(strcmp(v, types[i]) == 0) u->stype = i;
 	u->every_n = atoi(getParam(params, "ivalue"));
 	u->every_u = sched_unit(getParam(params, "iunit"), "smhd", 'm');
 	cs_strncpy(u->times, getParam(params, "time"), sizeof(u->times));
@@ -8147,8 +8148,11 @@ static int sched_ui_to_job(const sched_ui_t *u, sched_job_t *j, char *err, size_
 	switch(u->stype)
 	{
 	case SCHED_EVERY:
+	case SCHED_LOOP:
 		mult = u->every_u == 'd' ? 86400 : u->every_u == 'h' ? 3600 : u->every_u == 'm' ? 60 : 1;
-		if(u->every_n < 1 || (long)u->every_n * mult > 31536000L) { snprintf(err, errlen, "The interval must be between 1 second and 1 year."); return -1; }
+		if(u->stype == SCHED_LOOP && u->every_n < 0) { snprintf(err, errlen, "The pause cannot be negative."); return -1; }
+		if(u->stype == SCHED_EVERY && u->every_n < 1) { snprintf(err, errlen, "The interval must be between 1 second and 1 year."); return -1; }
+		if((long)u->every_n * mult > 31536000L) { snprintf(err, errlen, "The interval must be between 1 second and 1 year."); return -1; }
 		j->every_sec = (int32_t)(u->every_n * mult);
 		break;
 	case SCHED_DAILY:
@@ -8217,6 +8221,15 @@ static int sched_ui_to_job(const sched_ui_t *u, sched_job_t *j, char *err, size_
 		case SCHED_ARG_NUM:
 		{
 			int v = atoi(arg);
+			if(!strcmp(d->act, "repeat"))
+			{
+				int r;
+				if(v < 0 || v > 1000000) { snprintf(err, errlen, "Action %d: repeat 1 to 1000000 times, or 0 for non-stop.", i + 1); return -1; }
+				if(i == u->nsteps - 1) { snprintf(err, errlen, "Action %d: add the actions to repeat below it.", i + 1); return -1; }
+				for(r = 0; r < i; r++) { if(!strcmp(u->step[r].act, "repeat")) { snprintf(err, errlen, "Only one Repeat action is allowed."); return -1; } }
+				snprintf(s->arg, SCHED_ARG_LEN, "%d", v);
+				break;
+			}
 			if(v < 1 || v > 86400) { snprintf(err, errlen, "Action %d: wait 1 to 86400 seconds.", i + 1); return -1; }
 			snprintf(s->arg, SCHED_ARG_LEN, "%d", v);
 			break;
@@ -8244,6 +8257,7 @@ static void sched_step_text(const sched_step_t *s, char *out, size_t n)
 	const char *arg = strcmp(s->arg, "*") == 0 ? "all" : s->arg;
 	if(!d) snprintf(out, n, "%s %.60s", s->act, s->arg);
 	else if(d->kind == SCHED_ARG_NONE) cs_strncpy(out, d->label, n);
+	else if(strcmp(d->act, "repeat") == 0) { if(atoi(s->arg) > 0) snprintf(out, n, "Repeat below %s times", s->arg); else cs_strncpy(out, "Repeat below non-stop", n); }
 	else if(d->kind == SCHED_ARG_NUM) snprintf(out, n, "Wait %s s", s->arg);
 	else if(strcmp(d->act, "log") == 0) snprintf(out, n, "Log: %.60s", s->arg);
 	else if(strcmp(d->act, "api") == 0) snprintf(out, n, "Request: %.60s", s->arg);
@@ -8305,7 +8319,7 @@ static void sched_action_options(struct templatevars *vars, const char *selact, 
 	tpl_addVar(vars, TPLADD, "SCH_AOPTS", "<OPTION VALUE=\"\" DATA-K=\"none\">Select action...</OPTION>");
 	for(i = 0; (d = sched_actdef(i)); i++)
 	{
-		const char *ph = strcmp(d->act, "sleep") == 0 ? "seconds" : strcmp(d->act, "log") == 0 ? "message" : strcmp(d->act, "api") == 0 ? "page, e.g. status.html" : "";
+		const char *ph = strcmp(d->act, "sleep") == 0 ? "seconds" : strcmp(d->act, "repeat") == 0 ? "times, 0 = non-stop" : strcmp(d->act, "log") == 0 ? "message" : strcmp(d->act, "api") == 0 ? "page, e.g. status.html" : "";
 #ifndef CS_CACHEEX
 		if(strcmp(d->act, "stats.reset_cacheex") == 0) continue;
 #endif
@@ -8347,7 +8361,7 @@ static void sched_render_edit(struct templatevars *vars, const sched_ui_t *u)
 	time_t now = cs_time();
 	struct tm tmv;
 	int i, st = u->stype < 0 ? SCHED_DAILY : u->stype;
-	static const char *names[] = { "INTERVAL", "DAILY", "WEEKLY", "MONTHLY", "ONCE", "BOOT" };
+	static const char *names[] = { "INTERVAL", "DAILY", "WEEKLY", "MONTHLY", "ONCE", "BOOT", "LOOP" };
 
 	sched_load_targets(&rd, &us);
 	sched_get_hidden(hidden, sizeof(hidden));
@@ -8356,13 +8370,13 @@ static void sched_render_edit(struct templatevars *vars, const sched_ui_t *u)
 	tpl_addVar(vars, TPLADD, "SCH_NAME", xml_encode(vars, u->name));
 	tpl_addVar(vars, TPLADD, "SCH_ENABLED", u->enabled ? "CHECKED" : "");
 
-	for(i = 0; i < 6; i++)
+	for(i = 0; i < 7; i++)
 	{
 		char name[24];
 		snprintf(name, sizeof(name), "SCH_ST_%s", names[i]);
 		tpl_addVar(vars, TPLADD, name, st == i ? "SELECTED" : "");
 	}
-	tpl_addVar(vars, TPLADD, "SCH_R_INTERVAL", st == SCHED_EVERY ? "" : "schedhide");
+	tpl_addVar(vars, TPLADD, "SCH_R_INTERVAL", (st == SCHED_EVERY || st == SCHED_LOOP) ? "" : "schedhide");
 	tpl_addVar(vars, TPLADD, "SCH_R_DAYS", st == SCHED_WEEKLY ? "" : "schedhide");
 	tpl_addVar(vars, TPLADD, "SCH_R_MDAY", st == SCHED_MONTHLY ? "" : "schedhide");
 	tpl_addVar(vars, TPLADD, "SCH_R_DATE", st == SCHED_ONCE ? "" : "schedhide");
@@ -8444,6 +8458,7 @@ static void sched_render_list(struct templatevars *vars)
 		tpl_printf(vars, TPLADD, "SCH_ID", "%u", j->id);
 		tpl_addVar(vars, TPLADD, "SCH_JOB", xml_encode(vars, j->name));
 		tpl_addVar(vars, TPLADD, "SCH_ROWCLASS", j->enabled ? "" : "disabled");
+		tpl_addVar(vars, TPLADD, "SCH_TGLACT", "toggle");
 		tpl_addVar(vars, TPLADD, "SCH_TGLICON", j->enabled ? "ICENA" : "ICDIS");
 		tpl_addVar(vars, TPLADD, "SCH_TGLCLS", j->enabled ? "schedon" : "");
 		tpl_addVar(vars, TPLADD, "SCH_TGLTITLE", j->enabled ? "Enabled - click to disable" : "Disabled - click to enable");

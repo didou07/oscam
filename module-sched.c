@@ -22,6 +22,7 @@ static volatile int8_t sched_running = 0;
 static int8_t sched_thread_started = 0;
 static pthread_t sched_thread;
 static volatile int32_t workers = 0;
+static uint32_t epoch_seq = 0;
 
 static const sched_actdef_t actions[] =
 {
@@ -44,6 +45,7 @@ static const sched_actdef_t actions[] =
 	{ "stats.reset_cacheex",    "Reset CacheEX statistics",   SCHED_ARG_NONE },
 	{ "log",                    "Write log message",          SCHED_ARG_TEXT },
 	{ "sleep",                  "Wait (seconds)",             SCHED_ARG_NUM },
+	{ "repeat",                 "Repeat the actions below",   SCHED_ARG_NUM },
 	{ "api",                    "WebIF request",              SCHED_ARG_TEXT },
 	{ NULL, NULL, 0 }
 };
@@ -147,7 +149,8 @@ static time_t compute_next(const sched_job_t *j, time_t from)
 		case SCHED_WEEKLY:
 		case SCHED_MONTHLY: return next_calendar(j, from);
 		case SCHED_ONCE:    return j->once > from ? j->once : 0;
-		case SCHED_STARTUP: return 0;
+		case SCHED_STARTUP:
+		case SCHED_LOOP:    return 0;
 	}
 	return 0;
 }
@@ -194,6 +197,15 @@ void sched_describe_schedule(const sched_job_t *j, char *out, size_t outlen)
 		case SCHED_STARTUP:
 			snprintf(out, outlen, "%d s after start", j->delay_sec);
 			break;
+		case SCHED_LOOP:
+		{
+			int32_t s = j->every_sec;
+			if(s == 0)              { snprintf(out, outlen, "Loop, no pause"); }
+			else if(s % 3600 == 0)  { snprintf(out, outlen, "Loop, %d h pause", s / 3600); }
+			else if(s % 60 == 0)    { snprintf(out, outlen, "Loop, %d min pause", s / 60); }
+			else                    { snprintf(out, outlen, "Loop, %d s pause", s); }
+			break;
+		}
 		default:
 			snprintf(out, outlen, "-");
 	}
@@ -294,6 +306,7 @@ static int8_t finalize_job(sched_job_t *j, int8_t has_schedule_key, int8_t has_e
 		case SCHED_MONTHLY: if(j->ntimes < 1 || j->mday < 1 || j->mday > 31) { snprintf(err, errlen, "no day or time"); return 0; } break;
 		case SCHED_ONCE:    if(!j->once) { snprintf(err, errlen, "invalid date"); return 0; } break;
 		case SCHED_STARTUP: if(j->delay_sec < 0) { j->delay_sec = 0; } break;
+		case SCHED_LOOP:    if(j->every_sec < 0) { j->every_sec = 0; } break;
 		default: snprintf(err, errlen, "invalid schedule"); return 0;
 	}
 	return 1;
@@ -369,10 +382,12 @@ static int32_t parse_file(sched_job_t *tmp, int8_t *enabled)
 			else if(!strcmp(val, "monthly")) { cur->stype = SCHED_MONTHLY; }
 			else if(!strcmp(val, "once")) { cur->stype = SCHED_ONCE; }
 			else if(!strcmp(val, "startup")) { cur->stype = SCHED_STARTUP; }
+			else if(!strcmp(val, "loop")) { cur->stype = SCHED_LOOP; }
 			else { h_sched = 0; }
 		}
 		else if(!strcmp(key, "every")) { cur->every_sec = parse_every(val); h_every = 1; }
 		else if(!strcmp(key, "interval")) { cur->every_sec = atoi(val); h_every = 1; }
+		else if(!strcmp(key, "pause")) { cur->every_sec = parse_every(val); }
 		else if(!strcmp(key, "time")) { if(parse_times(val, cur)) { h_time = 1; } }
 		else if(!strcmp(key, "days")) { if(parse_days(val, &cur->wdays)) { h_days = 1; } }
 		else if(!strcmp(key, "weekly"))
@@ -419,7 +434,7 @@ static int8_t write_file_locked(void)
 	for(i = 0; i < job_count; i++)
 	{
 		const sched_job_t *j = &jobs[i];
-		static const char *types[] = { "every", "daily", "weekly", "monthly", "once", "startup" };
+		static const char *types[] = { "every", "daily", "weekly", "monthly", "once", "startup", "loop" };
 		fprintf(fp, "\n[job:%s]\nenabled = %d\nschedule = %s\n", j->name, j->enabled ? 1 : 0, types[(int)j->stype]);
 		switch(j->stype)
 		{
@@ -447,6 +462,7 @@ static int8_t write_file_locked(void)
 				break;
 			}
 			case SCHED_STARTUP: fprintf(fp, "delay = %d\n", j->delay_sec); break;
+			case SCHED_LOOP:    fprintf(fp, "pause = %ds\n", j->every_sec); break;
 		}
 		for(k = 0; k < j->nsteps; k++)
 		{
@@ -462,45 +478,89 @@ static int8_t write_file_locked(void)
 typedef struct
 {
 	char name[SCHED_NAME_LEN];
+	uint32_t epoch;
+	int8_t looping;
 	int32_t nsteps;
 	sched_step_t steps[SCHED_MAX_STEPS];
 } run_ctx_t;
 
-static void sleep_interruptible(int32_t seconds)
+static int8_t ctx_active(const run_ctx_t *ctx)
 {
 	int32_t i;
-	for(i = 0; i < seconds * 10 && sched_running; i++) { cs_sleepms(100); }
+	int8_t ok = 0;
+	pthread_mutex_lock(&sched_mx);
+	for(i = 0; i < job_count; i++)
+	{
+		if(!strcmp(jobs[i].name, ctx->name))
+			{ ok = sched_running && master_enabled && jobs[i].enabled && jobs[i].epoch == ctx->epoch; break; }
+	}
+	pthread_mutex_unlock(&sched_mx);
+	return ok;
 }
 
-static int32_t run_step(const char *job, const sched_step_t *s, char *msg, size_t msglen)
+static void sleep_interruptible(int32_t seconds, const run_ctx_t *ctx)
+{
+	int32_t i;
+	for(i = 0; i < seconds * 10 && sched_running; i++)
+	{
+		cs_sleepms(100);
+		if(ctx->looping && i % 10 == 9 && !ctx_active(ctx)) { break; }
+	}
+}
+
+static int32_t run_step(const run_ctx_t *ctx, const sched_step_t *s, char *msg, size_t msglen)
 {
 	msg[0] = '\0';
-	if(!strcmp(s->act, "sleep")) { sleep_interruptible(atoi(s->arg)); return 0; }
-	if(!strcmp(s->act, "log")) { cs_log("[%s] %s", job, s->arg); return 0; }
+	if(!strcmp(s->act, "sleep")) { sleep_interruptible(atoi(s->arg), ctx); return 0; }
+	if(!strcmp(s->act, "repeat")) { return 0; }
+	if(!strcmp(s->act, "log")) { cs_log("[%s] %s", ctx->name, s->arg); return 0; }
 	if(!strcmp(s->act, "api")) { return sched_api_call(s->arg, msg, msglen); }
 	if(!sched_is_known_action(s->act)) { snprintf(msg, msglen, "unknown action '%s'", s->act); return -1; }
 	return sched_exec_action(s->act, s->arg, msg, msglen);
 }
 
+static void run_one(const run_ctx_t *ctx, int32_t i, int32_t *ok, char *first_err, size_t errlen)
+{
+	char msg[SCHED_MSG_LEN];
+	if(run_step(ctx, &ctx->steps[i], msg, sizeof(msg)) != 0)
+	{
+		cs_log("[%s] step %d (%s) failed: %s", ctx->name, i + 1, ctx->steps[i].act, msg);
+		if(*ok) { snprintf(first_err, errlen, "step %d: %s", i + 1, msg); }
+		*ok = 0;
+	}
+}
+
 static void *worker_main(void *arg)
 {
 	run_ctx_t *ctx = (run_ctx_t *)arg;
-	int32_t i, ok = 1;
-	char msg[SCHED_MSG_LEN], first_err[SCHED_MSG_LEN] = "";
+	int32_t i, k, round, rounds, ok = 1, stopped = 0;
+	char first_err[SCHED_MSG_LEN] = "";
 	int32_t jidx;
-	time_t now;
+	time_t now, began;
 
 	cs_log("job '%s' started (%d step%s)", ctx->name, ctx->nsteps, ctx->nsteps == 1 ? "" : "s");
 	for(i = 0; i < ctx->nsteps && sched_running; i++)
 	{
-		if(run_step(ctx->name, &ctx->steps[i], msg, sizeof(msg)) != 0)
+		if(strcmp(ctx->steps[i].act, "repeat"))
+			{ run_one(ctx, i, &ok, first_err, sizeof(first_err)); continue; }
+
+		rounds = atoi(ctx->steps[i].arg);
+		ctx->looping = 1;
+		for(round = 0; (rounds <= 0 || round < rounds) && ctx_active(ctx); round++)
 		{
-			cs_log("[%s] step %d (%s) failed: %s", ctx->name, i + 1, ctx->steps[i].act, msg);
-			if(ok) { snprintf(first_err, sizeof(first_err), "step %d: %s", i + 1, msg); }
-			ok = 0;
+			began = cs_time();
+			for(k = i + 1; k < ctx->nsteps; k++)
+			{
+				run_one(ctx, k, &ok, first_err, sizeof(first_err));
+				if(!ctx_active(ctx)) { break; }
+			}
+			if(cs_time() == began) { sleep_interruptible(1, ctx); }
 		}
+		stopped = !ctx_active(ctx);
+		break;
 	}
-	cs_log("job '%s' finished: %s", ctx->name, ok ? "ok" : "with errors");
+	if(stopped) { cs_log("job '%s' stopped", ctx->name); }
+	else { cs_log("job '%s' finished: %s", ctx->name, ok ? "ok" : "with errors"); }
 
 	now = cs_time();
 	pthread_mutex_lock(&sched_mx);
@@ -509,6 +569,8 @@ static void *worker_main(void *arg)
 		if(!strcmp(jobs[jidx].name, ctx->name))
 		{
 			jobs[jidx].running = 0;
+			if(jobs[jidx].stype == SCHED_LOOP && jobs[jidx].enabled && sched_running)
+				{ jobs[jidx].next_run = now + jobs[jidx].every_sec; }
 			jobs[jidx].last_run = now;
 			jobs[jidx].run_count++;
 			jobs[jidx].last_ok = ok;
@@ -532,6 +594,7 @@ static void launch_locked(sched_job_t *j)
 	if(!cs_malloc(&ctx, sizeof(run_ctx_t))) { return; }
 	cs_strncpy(ctx->name, j->name, SCHED_NAME_LEN);
 	ctx->nsteps = j->nsteps;
+	ctx->epoch = j->epoch;
 	memcpy(ctx->steps, j->steps, sizeof(j->steps));
 
 	j->running = 1;
@@ -587,6 +650,7 @@ static void init_next_locked(sched_job_t *j)
 	{
 		case SCHED_STARTUP: j->next_run = start_time + j->delay_sec; if(j->next_run < now) { j->next_run = 0; j->done = 1; } break;
 		case SCHED_ONCE:    j->next_run = j->once > now ? j->once : 0; if(!j->next_run) { j->done = 1; } break;
+		case SCHED_LOOP:    j->next_run = j->running ? 0 : now; break;
 		default:            j->next_run = compute_next(j, now);
 	}
 }
@@ -604,6 +668,7 @@ static int8_t load_locked(void)
 	{
 		sched_job_t *nj = &tmp[i];
 		nj->id = next_id++;
+		nj->epoch = ++epoch_seq;
 		init_next_locked(nj);
 		for(k = 0; k < job_count; k++)
 		{
@@ -614,6 +679,7 @@ static int8_t load_locked(void)
 				nj->last_ok = jobs[k].last_ok;
 				cs_strncpy(nj->last_msg, jobs[k].last_msg, SCHED_MSG_LEN);
 				nj->running = jobs[k].running;
+				if(nj->stype == SCHED_LOOP && nj->running) { nj->next_run = 0; }
 				if(nj->stype == jobs[k].stype && (nj->stype == SCHED_STARTUP || nj->stype == SCHED_ONCE) && jobs[k].done)
 					{ nj->done = 1; nj->next_run = 0; }
 				break;
@@ -747,6 +813,7 @@ uint32_t sched_job_save(const sched_job_t *job, uint32_t id, char *err, size_t e
 		nj.last_run = old->last_run; nj.run_count = old->run_count; nj.last_ok = old->last_ok;
 		cs_strncpy(nj.last_msg, old->last_msg, SCHED_MSG_LEN);
 		nj.running = old->running;
+		nj.epoch = ++epoch_seq;
 		if(strcmp(old->name, nj.name) && old->running) { nj.running = 0; }
 		init_next_locked(&nj);
 		*old = nj;
@@ -755,6 +822,7 @@ uint32_t sched_job_save(const sched_job_t *job, uint32_t id, char *err, size_t e
 	else
 	{
 		nj.id = next_id++;
+		nj.epoch = ++epoch_seq;
 		nj.last_run = 0; nj.run_count = 0; nj.running = 0; nj.last_msg[0] = '\0';
 		init_next_locked(&nj);
 		jobs[job_count++] = nj;

@@ -22,7 +22,8 @@ enum
 	SCHED_WEEKLY,
 	SCHED_MONTHLY,
 	SCHED_ONCE,
-	SCHED_STARTUP
+	SCHED_STARTUP,
+	SCHED_LOOP
 };
 
 enum
@@ -71,6 +72,7 @@ typedef struct
 	char     last_msg[SCHED_MSG_LEN];
 	int8_t   running;
 	int8_t   done;
+	uint32_t epoch;
 } sched_job_t;
 
 void    sched_init(void);
