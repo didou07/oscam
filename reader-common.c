@@ -272,6 +272,7 @@ void cardreader_do_reset(struct s_reader *reader)
 		cardreader_get_card_info(reader);
 		reader->card_status = CARD_INSERTED;
 		reader->fast_reset_paused = 0;
+		reader->fast_reset_idle_base = time(NULL); // idle countdown starts here, even if no ECM ever arrives
 		do_emm_from_file(reader);
 		// Start the interval after initialization; do not reset the card a second time immediately.
 		reader->fast_reset_last = time(NULL);
@@ -427,7 +428,13 @@ static void cardreader_fast_reset_check(struct s_client *cl, struct s_reader *rd
 			}
 			return;
 		}
-		if(activity && now - activity >= rdr->fast_reset_idle)
+		// Idle is measured from the last ECM, or - if there was none since the card was initialised -
+		// from the card init / enable time. Without that baseline the pause could only ever start after
+		// the first ECM and fast reset kept running forever on a reader nobody uses.
+		if(!rdr->fast_reset_idle_base)
+			{ rdr->fast_reset_idle_base = now; }
+		time_t idle_since = (activity > rdr->fast_reset_idle_base) ? activity : rdr->fast_reset_idle_base;
+		if(now - idle_since >= rdr->fast_reset_idle)
 		{
 			rdr->fast_reset_paused = 1;
 			return;

@@ -1584,6 +1584,7 @@ struct s_reader										// contains device info, reader info and card info
 	int32_t			fast_reset_idle;				// pause Fast Reset after N seconds without ECM (0 = never pause)
 	time_t			fast_reset_last;				// time of last (fast) reset
 	int8_t			fast_reset_paused;				// paused because of idle
+	time_t			fast_reset_idle_base;			// start of the idle measurement (card init / enable), used while no ECM has been seen yet
 	int8_t			fast_reset_nocardinit;			// skip card_init on Fast Reset (default 1)
 	int8_t			fast_reset_nocardinfo;			// skip card info on Fast Reset (default 1)
 	int8_t			disable_card_info;				// never read card info (not at startup, not after resets) (default 0)
